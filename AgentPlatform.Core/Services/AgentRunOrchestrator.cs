@@ -11,8 +11,13 @@ public sealed class AgentRunOrchestrator(
     IStaticCatalog staticCatalog,
     IConversationStore conversationStore,
     IAgentRuntime runtime,
-    IContextPolicyResolver contextPolicyResolver)
+    IContextPolicyResolver contextPolicyResolver,
+    IThinkingPolicyResolver thinkingPolicyResolver,
+    IModelCatalog modelCatalog,
+    IReasoningTraceStore reasoningTraceStore)
 {
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
     public async IAsyncEnumerable<RunStreamEvent> StreamAsync(
         StreamRunRequest request,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
@@ -38,11 +43,24 @@ public sealed class AgentRunOrchestrator(
         ValidateAllowed("skill", skillIds, agent.AllowedSkillIds);
 
         var model = string.IsNullOrWhiteSpace(request.Model) ? agent.Model : request.Model!;
+        var resolvedModel = modelCatalog.Resolve(model);
         var instructions = BuildInstructions(agent.Instructions, middlewareIds);
         var sessionId = string.IsNullOrWhiteSpace(request.SessionId) ? Guid.NewGuid().ToString("n") : request.SessionId!;
         var storedSession = await conversationStore.GetStoredSessionAsync(sessionId, cancellationToken);
+        var modelChanged = storedSession is not null &&
+            !string.Equals(storedSession.Model.Id, resolvedModel.Id, StringComparison.OrdinalIgnoreCase);
         var resolvedContextPolicy = storedSession?.ContextPolicy ?? contextPolicyResolver.Resolve(agent.ContextPolicy);
-        var configHash = ComputeConfigHash(agent.Id, model, toolIds, middlewareIds, skillIds, resolvedContextPolicy);
+        var resolvedThinkingPolicy = modelChanged
+            ? thinkingPolicyResolver.Resolve(null, agent.ThinkingPolicy, resolvedModel.ThinkingPolicy)
+            : thinkingPolicyResolver.Resolve(storedSession?.ThinkingPolicy, agent.ThinkingPolicy, resolvedModel.ThinkingPolicy);
+        var configHash = ComputeConfigHash(
+            agent.Id,
+            resolvedModel,
+            toolIds,
+            middlewareIds,
+            skillIds,
+            resolvedContextPolicy,
+            resolvedThinkingPolicy);
 
         if (storedSession is null)
         {
@@ -56,41 +74,61 @@ public sealed class AgentRunOrchestrator(
                 middlewareIds,
                 skillIds,
                 resolvedContextPolicy,
+                resolvedThinkingPolicy,
+                resolvedModel,
                 cancellationToken);
         }
         else if (!string.Equals(storedSession.ConfigHash, configHash, StringComparison.Ordinal))
         {
-            throw new AgentPlatformValidationException("The session was created with a different agent configuration and cannot be restored for this run.");
+            if (!CanSwitchModel(storedSession, agent.Id, toolIds, middlewareIds, skillIds, resolvedModel))
+            {
+                throw new AgentPlatformValidationException("The session was created with a different agent configuration and cannot be restored for this run.");
+            }
+
+            await conversationStore.UpdateSessionConfigurationAsync(
+                sessionId,
+                configHash,
+                resolvedThinkingPolicy,
+                resolvedModel,
+                cancellationToken);
         }
 
         var runSpec = new AgentRunSpec(
             sessionId,
             agent,
-            model,
+            resolvedModel.Id,
             instructions,
             toolIds,
             middlewareIds,
             skillIds,
             resolvedContextPolicy,
+            resolvedThinkingPolicy,
+            resolvedModel,
             request.Message,
             configHash);
         var assistantMessage = new StringBuilder();
+        var reasoningMessage = new StringBuilder();
 
         var started = new RunStreamEvent(
             "run.started",
             sessionId,
-            new RunStartedPayload(agent.Id, model, toolIds, middlewareIds, skillIds, resolvedContextPolicy),
+            new RunStartedPayload(agent.Id, resolvedModel.Id, toolIds, middlewareIds, skillIds, resolvedContextPolicy, resolvedThinkingPolicy, ToModelDefinition(resolvedModel)),
             DateTimeOffset.UtcNow);
         await conversationStore.AddRunEventAsync(sessionId, started.Event, started.Data, cancellationToken);
         yield return started;
 
-        string? serializedSessionState = storedSession.SerializedSessionState;
+        string? serializedSessionState = modelChanged ? null : storedSession.SerializedSessionState;
 
-        await foreach (var runtimeEvent in runtime.StreamAsync(runSpec, storedSession.SerializedSessionState, cancellationToken))
+        await foreach (var runtimeEvent in runtime.StreamAsync(runSpec, serializedSessionState, cancellationToken))
         {
             if (runtimeEvent.Event == "text.delta" && runtimeEvent.Data is TextDeltaPayload delta)
             {
                 assistantMessage.Append(delta.Text);
+            }
+
+            if (runtimeEvent.Event == "reasoning.delta" && runtimeEvent.Data is ReasoningDeltaPayload reasoning)
+            {
+                reasoningMessage.Append(reasoning.Text);
             }
 
             if (!string.IsNullOrWhiteSpace(runtimeEvent.SerializedSessionState))
@@ -99,15 +137,36 @@ public sealed class AgentRunOrchestrator(
             }
 
             var outgoing = new RunStreamEvent(runtimeEvent.Event, sessionId, runtimeEvent.Data, DateTimeOffset.UtcNow);
-            await conversationStore.AddRunEventAsync(sessionId, outgoing.Event, outgoing.Data, cancellationToken);
-            yield return outgoing;
+            if (runtimeEvent.ExposeToClient)
+            {
+                await conversationStore.AddRunEventAsync(sessionId, outgoing.Event, outgoing.Data, cancellationToken);
+                yield return outgoing;
+            }
         }
 
         var finalText = assistantMessage.ToString();
+        var finalReasoning = reasoningMessage.ToString();
         await conversationStore.AddMessageAsync(sessionId, "user", request.Message, cancellationToken);
         if (!string.IsNullOrWhiteSpace(finalText))
         {
             await conversationStore.AddMessageAsync(sessionId, "assistant", finalText, cancellationToken);
+        }
+
+        if (!string.IsNullOrWhiteSpace(finalReasoning) &&
+            !string.Equals(resolvedThinkingPolicy.Capture, ThinkingPolicyResolver.CaptureNone, StringComparison.OrdinalIgnoreCase))
+        {
+            await reasoningTraceStore.SaveAsync(
+                new ReasoningTraceWriteDto(
+                    sessionId,
+                    MessageId: null,
+                    TurnSequence: await GetNextReasoningTurnAsync(sessionId, cancellationToken),
+                    Role: "assistant",
+                    Model: resolvedModel.Id,
+                    ReasoningContentJson: JsonSerializer.Serialize(new { text = finalReasoning }, JsonOptions),
+                    TokenEstimate: EstimateTokens(finalReasoning),
+                    CaptureMode: resolvedThinkingPolicy.Capture ?? ThinkingPolicyResolver.CaptureOpaque),
+                cancellationToken);
+            await reasoningTraceStore.PruneOrCompactAsync(sessionId, resolvedThinkingPolicy, cancellationToken);
         }
 
         await conversationStore.UpdateSessionAfterRunAsync(
@@ -195,20 +254,24 @@ public sealed class AgentRunOrchestrator(
 
     public static string ComputeConfigHash(
         string agentId,
-        string model,
+        ResolvedModel model,
         IReadOnlyList<string> toolIds,
         IReadOnlyList<string> middlewareIds,
         IReadOnlyList<string> skillIds,
-        ContextPolicyDto contextPolicy)
+        ContextPolicyDto contextPolicy,
+        ThinkingPolicyDto thinkingPolicy)
     {
         var payload = JsonSerializer.Serialize(new
         {
             agentId,
-            model,
+            model = model.Id,
+            provider = model.Provider,
+            compatibilityGroup = model.CompatibilityGroup,
             tools = toolIds.Order(StringComparer.OrdinalIgnoreCase),
             middleware = middlewareIds.Order(StringComparer.OrdinalIgnoreCase),
             skills = skillIds.Order(StringComparer.OrdinalIgnoreCase),
-            context = contextPolicy
+            context = contextPolicy,
+            thinking = thinkingPolicy
         });
 
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(payload)));
@@ -222,6 +285,42 @@ public sealed class AgentRunOrchestrator(
         var trimmed = message.Trim();
         return trimmed.Length <= maxLength ? trimmed : trimmed[..maxLength];
     }
+
+    private async Task<int> GetNextReasoningTurnAsync(string sessionId, CancellationToken cancellationToken)
+    {
+        var traces = await reasoningTraceStore.GetForSessionAsync(sessionId, null, 1, cancellationToken);
+        return traces.Count == 0 ? 1 : traces.Max(trace => trace.TurnSequence) + 1;
+    }
+
+    private static int EstimateTokens(string text)
+        => Math.Max(1, (int)Math.Ceiling(text.Length / 4.0));
+
+    private static bool CanSwitchModel(
+        StoredSession storedSession,
+        string agentId,
+        IReadOnlyList<string> toolIds,
+        IReadOnlyList<string> middlewareIds,
+        IReadOnlyList<string> skillIds,
+        ResolvedModel newModel)
+        => string.Equals(storedSession.AgentId, agentId, StringComparison.OrdinalIgnoreCase) &&
+           SameSet(storedSession.ToolIds, toolIds) &&
+           SameSet(storedSession.MiddlewareIds, middlewareIds) &&
+           SameSet(storedSession.SkillIds, skillIds) &&
+           !string.Equals(storedSession.Model.Id, newModel.Id, StringComparison.OrdinalIgnoreCase);
+
+    private static bool SameSet(IReadOnlyList<string> left, IReadOnlyList<string> right)
+        => left.Order(StringComparer.OrdinalIgnoreCase).SequenceEqual(
+            right.Order(StringComparer.OrdinalIgnoreCase),
+            StringComparer.OrdinalIgnoreCase);
+
+    private static ModelDefinitionDto ToModelDefinition(ResolvedModel model)
+        => new(
+            model.Id,
+            model.Provider,
+            model.BaseUrl,
+            model.CompatibilityGroup,
+            model.ContextWindowTokens,
+            model.ThinkingPolicy);
 }
 
 public sealed class AgentPlatformValidationException(string message) : Exception(message);

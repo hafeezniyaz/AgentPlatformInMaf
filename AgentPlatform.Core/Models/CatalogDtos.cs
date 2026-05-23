@@ -5,7 +5,9 @@ public sealed record CatalogResponse(
     IReadOnlyList<CatalogItemDto> Tools,
     IReadOnlyList<CatalogItemDto> Middleware,
     IReadOnlyList<CatalogItemDto> Skills,
-    ContextCapabilitiesDto Context);
+    ContextCapabilitiesDto Context,
+    ThinkingCapabilitiesDto Thinking,
+    IReadOnlyList<ModelDefinitionDto> Models);
 
 public sealed record CatalogItemDto(
     string Id,

@@ -83,6 +83,12 @@ public sealed class SqliteConversationStore(AgentPlatformDbContext dbContext) : 
             session.ContextMode,
             session.ContextProfile,
             ReadCompactionStats(session.LastCompactionStatsJson),
+            ReadThinkingPolicy(session.ThinkingPolicyJson),
+            session.ThinkingMode,
+            session.ThinkingCapture,
+            session.ReasoningTraceCount,
+            session.LastReasoningTokenEstimate,
+            ReadModel(session),
             session.CreatedAt,
             session.UpdatedAt,
             messages);
@@ -141,7 +147,13 @@ public sealed class SqliteConversationStore(AgentPlatformDbContext dbContext) : 
                 session.ContextMode,
                 session.ContextProfile,
                 session.CompactedPromptSnapshotJson,
-                ReadCompactionStats(session.LastCompactionStatsJson));
+                ReadCompactionStats(session.LastCompactionStatsJson),
+                ReadThinkingPolicy(session.ThinkingPolicyJson),
+                session.ThinkingMode,
+                session.ThinkingCapture,
+                session.ReasoningTraceCount,
+                session.LastReasoningTokenEstimate,
+                ReadResolvedModel(session));
     }
 
     public async Task<StoredSession> CreateSessionAsync(
@@ -154,6 +166,8 @@ public sealed class SqliteConversationStore(AgentPlatformDbContext dbContext) : 
         IReadOnlyList<string> middlewareIds,
         IReadOnlyList<string> skillIds,
         ContextPolicyDto contextPolicy,
+        ThinkingPolicyDto thinkingPolicy,
+        ResolvedModel model,
         CancellationToken cancellationToken)
     {
         var now = DateTimeOffset.UtcNow;
@@ -171,6 +185,14 @@ public sealed class SqliteConversationStore(AgentPlatformDbContext dbContext) : 
             ContextPolicyJson = WriteContextPolicy(contextPolicy),
             ContextMode = contextPolicy.Mode ?? "inFlight",
             ContextProfile = contextPolicy.Profile ?? "balanced",
+            ThinkingPolicyJson = WriteThinkingPolicy(thinkingPolicy),
+            ThinkingMode = thinkingPolicy.Mode ?? "disabled",
+            ThinkingCapture = thinkingPolicy.Capture ?? "opaque",
+            ModelId = model.Id,
+            ModelProvider = model.Provider,
+            ModelBaseUrl = model.BaseUrl,
+            ModelCompatibilityGroup = model.CompatibilityGroup,
+            ModelContextWindowTokens = model.ContextWindowTokens,
             CreatedAt = now,
             UpdatedAt = now
         };
@@ -191,7 +213,13 @@ public sealed class SqliteConversationStore(AgentPlatformDbContext dbContext) : 
             contextPolicy.Mode ?? "inFlight",
             contextPolicy.Profile ?? "balanced",
             null,
-            null);
+            null,
+            thinkingPolicy,
+            thinkingPolicy.Mode ?? "disabled",
+            thinkingPolicy.Capture ?? "opaque",
+            0,
+            0,
+            model);
     }
 
     public async Task AddMessageAsync(string sessionId, string role, string content, CancellationToken cancellationToken)
@@ -226,6 +254,28 @@ public sealed class SqliteConversationStore(AgentPlatformDbContext dbContext) : 
             CreatedAt = DateTimeOffset.UtcNow
         });
 
+        await dbContext.SaveChangesAsync(cancellationToken);
+    }
+
+    public async Task UpdateSessionConfigurationAsync(
+        string sessionId,
+        string configHash,
+        ThinkingPolicyDto thinkingPolicy,
+        ResolvedModel model,
+        CancellationToken cancellationToken)
+    {
+        var session = await dbContext.ChatSessions.FirstAsync(item => item.SessionId == sessionId, cancellationToken);
+        session.ConfigHash = configHash;
+        session.SerializedSessionState = null;
+        session.ThinkingPolicyJson = WriteThinkingPolicy(thinkingPolicy);
+        session.ThinkingMode = thinkingPolicy.Mode ?? "disabled";
+        session.ThinkingCapture = thinkingPolicy.Capture ?? "opaque";
+        session.ModelId = model.Id;
+        session.ModelProvider = model.Provider;
+        session.ModelBaseUrl = model.BaseUrl;
+        session.ModelCompatibilityGroup = model.CompatibilityGroup;
+        session.ModelContextWindowTokens = model.ContextWindowTokens;
+        session.UpdatedAt = DateTimeOffset.UtcNow;
         await dbContext.SaveChangesAsync(cancellationToken);
     }
 
@@ -289,4 +339,37 @@ public sealed class SqliteConversationStore(AgentPlatformDbContext dbContext) : 
         => string.IsNullOrWhiteSpace(json)
             ? null
             : JsonSerializer.Deserialize<ContextCompactionStatsDto>(json, JsonOptions);
+
+    private static string WriteThinkingPolicy(ThinkingPolicyDto thinkingPolicy)
+        => JsonSerializer.Serialize(thinkingPolicy, JsonOptions);
+
+    private static ThinkingPolicyDto ReadThinkingPolicy(string? json)
+        => string.IsNullOrWhiteSpace(json)
+            ? new ThinkingPolicyDto { Enabled = false, Mode = "disabled", Capture = "opaque", ExposeToClient = false, MaxPreservedTokens = 24000 }
+            : JsonSerializer.Deserialize<ThinkingPolicyDto>(json, JsonOptions)
+                ?? new ThinkingPolicyDto { Enabled = false, Mode = "disabled", Capture = "opaque", ExposeToClient = false, MaxPreservedTokens = 24000 };
+
+    private static ModelDefinitionDto ReadModel(ChatSessionEntity session)
+    {
+        var resolved = ReadResolvedModel(session);
+        return new ModelDefinitionDto(
+            resolved.Id,
+            resolved.Provider,
+            resolved.BaseUrl,
+            resolved.CompatibilityGroup,
+            resolved.ContextWindowTokens,
+            resolved.ThinkingPolicy);
+    }
+
+    private static ResolvedModel ReadResolvedModel(ChatSessionEntity session)
+    {
+        var modelId = string.IsNullOrWhiteSpace(session.ModelId) ? "unknown" : session.ModelId;
+        return new ResolvedModel(
+            modelId,
+            string.IsNullOrWhiteSpace(session.ModelProvider) ? "openai" : session.ModelProvider,
+            session.ModelBaseUrl,
+            string.IsNullOrWhiteSpace(session.ModelCompatibilityGroup) ? modelId : session.ModelCompatibilityGroup,
+            session.ModelContextWindowTokens,
+            ReadThinkingPolicy(session.ThinkingPolicyJson));
+    }
 }

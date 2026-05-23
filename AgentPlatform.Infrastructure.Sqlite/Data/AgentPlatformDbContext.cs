@@ -13,6 +13,8 @@ public sealed class AgentPlatformDbContext(DbContextOptions<AgentPlatformDbConte
 
     public DbSet<RunEventEntity> RunEvents => Set<RunEventEntity>();
 
+    public DbSet<ReasoningTraceEntity> ReasoningTraces => Set<ReasoningTraceEntity>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<UserAgentEntity>(entity =>
@@ -31,6 +33,11 @@ public sealed class AgentPlatformDbContext(DbContextOptions<AgentPlatformDbConte
             entity.Property(session => session.ConfigHash).HasMaxLength(128);
             entity.Property(session => session.ContextMode).HasMaxLength(40);
             entity.Property(session => session.ContextProfile).HasMaxLength(40);
+            entity.Property(session => session.ThinkingMode).HasMaxLength(40);
+            entity.Property(session => session.ThinkingCapture).HasMaxLength(40);
+            entity.Property(session => session.ModelId).HasMaxLength(160);
+            entity.Property(session => session.ModelProvider).HasMaxLength(40);
+            entity.Property(session => session.ModelCompatibilityGroup).HasMaxLength(160);
             entity.HasIndex(session => new { session.IsArchived, session.UpdatedAt });
         });
 
@@ -48,6 +55,18 @@ public sealed class AgentPlatformDbContext(DbContextOptions<AgentPlatformDbConte
             entity.Property(runEvent => runEvent.SessionId).HasMaxLength(64);
             entity.Property(runEvent => runEvent.EventName).HasMaxLength(80);
             entity.HasIndex(runEvent => new { runEvent.SessionId, runEvent.CreatedAt });
+        });
+
+        modelBuilder.Entity<ReasoningTraceEntity>(entity =>
+        {
+            entity.HasKey(trace => trace.Id);
+            entity.Property(trace => trace.SessionId).HasMaxLength(64);
+            entity.Property(trace => trace.MessageId).HasMaxLength(64);
+            entity.Property(trace => trace.Role).HasMaxLength(32);
+            entity.Property(trace => trace.Model).HasMaxLength(160);
+            entity.Property(trace => trace.CaptureMode).HasMaxLength(40);
+            entity.HasIndex(trace => new { trace.SessionId, trace.TurnSequence });
+            entity.HasIndex(trace => new { trace.SessionId, trace.CreatedAt });
         });
     }
 }

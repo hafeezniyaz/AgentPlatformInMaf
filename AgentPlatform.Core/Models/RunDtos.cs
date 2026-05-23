@@ -23,8 +23,12 @@ public sealed record RunStartedPayload(
     IReadOnlyList<string> ToolIds,
     IReadOnlyList<string> MiddlewareIds,
     IReadOnlyList<string> SkillIds,
-    ContextPolicyDto ContextPolicy);
+    ContextPolicyDto ContextPolicy,
+    ThinkingPolicyDto ThinkingPolicy,
+    ModelDefinitionDto ModelInfo);
 
 public sealed record RunCompletedPayload(string AssistantMessage);
 
 public sealed record RunErrorPayload(string Message);
+
+public sealed record ReasoningDeltaPayload(string Text);

@@ -9,7 +9,9 @@ public sealed class AgentCatalogService(
     IUserAgentStore userAgentStore,
     IStaticCatalog staticCatalog,
     IOptions<AgentPlatformOptions> options,
-    IContextPolicyResolver contextPolicyResolver) : IAgentCatalogService
+    IContextPolicyResolver contextPolicyResolver,
+    IThinkingPolicyResolver thinkingPolicyResolver,
+    IModelCatalog modelCatalog) : IAgentCatalogService
 {
     private readonly IReadOnlyList<IPrebuiltAgentDefinition> _prebuiltAgents = prebuiltAgents.ToList();
 
@@ -25,7 +27,9 @@ public sealed class AgentCatalogService(
             staticCatalog.Tools,
             staticCatalog.Middleware,
             staticCatalog.Skills,
-            contextPolicyResolver.GetCapabilities());
+            contextPolicyResolver.GetCapabilities(),
+            thinkingPolicyResolver.GetCapabilities(),
+            modelCatalog.ListModels());
     }
 
     public async Task<AgentDefinitionDto?> GetAgentAsync(string agentId, CancellationToken cancellationToken)
@@ -37,12 +41,14 @@ public sealed class AgentCatalogService(
     public Task<AgentDefinitionDto> CreateAgentAsync(CreateAgentRequest request, CancellationToken cancellationToken)
     {
         contextPolicyResolver.Resolve(request.ContextPolicy);
+        ThinkingPolicyResolver.ValidateOverride(request.ThinkingPolicy);
         return userAgentStore.CreateAsync(request, options.Value.DefaultModel, cancellationToken);
     }
 
     public Task<AgentDefinitionDto?> UpdateAgentAsync(string agentId, UpdateAgentRequest request, CancellationToken cancellationToken)
     {
         contextPolicyResolver.Resolve(request.ContextPolicy);
+        ThinkingPolicyResolver.ValidateOverride(request.ThinkingPolicy);
         return userAgentStore.UpdateAsync(agentId, request, cancellationToken);
     }
 }

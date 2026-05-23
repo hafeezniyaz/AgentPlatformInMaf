@@ -17,6 +17,8 @@ public sealed class SqliteChatHistoryProvider(
     public const string SessionIdStateKey = "agentPlatform.sessionId";
     public const string ContextModeStateKey = "agentPlatform.context.mode";
     public const string ContextPolicyStateKey = "agentPlatform.context.policy";
+    public const string ThinkingModeStateKey = "agentPlatform.thinking.mode";
+    public const string ModelCompatibilityGroupStateKey = "agentPlatform.model.compatibilityGroup";
 
     protected override async ValueTask<IEnumerable<ChatMessage>> ProvideChatHistoryAsync(
         InvokingContext context,
@@ -35,7 +37,11 @@ public sealed class SqliteChatHistoryProvider(
             ContextPolicyResolver.ModePersistedPrompt,
             StringComparison.OrdinalIgnoreCase);
 
-        return await LoadMessagesAsync(sessionId, preferCompactedSnapshot, cancellationToken);
+        var thinkingMode = TryGetSessionString(context.Session, ThinkingModeStateKey);
+        var compatibilityGroup = TryGetSessionString(context.Session, ModelCompatibilityGroupStateKey);
+        var includeReasoning = string.Equals(thinkingMode, ThinkingPolicyResolver.ModePreserved, StringComparison.OrdinalIgnoreCase);
+
+        return await LoadMessagesAsync(sessionId, preferCompactedSnapshot, includeReasoning, compatibilityGroup, cancellationToken);
     }
 
     protected override async ValueTask StoreChatHistoryAsync(InvokedContext context, CancellationToken cancellationToken)
@@ -55,7 +61,12 @@ public sealed class SqliteChatHistoryProvider(
         }
 
         var policy = TryGetPolicy(context.Session) ?? await LoadStoredContextPolicyAsync(sessionId, cancellationToken);
-        var previousMessages = await LoadMessagesAsync(sessionId, preferCompactedSnapshot: true, cancellationToken);
+        var previousMessages = await LoadMessagesAsync(
+            sessionId,
+            preferCompactedSnapshot: true,
+            includeReasoning: false,
+            compatibilityGroup: null,
+            cancellationToken);
         var sourceMessages = previousMessages
             .Concat(context.RequestMessages)
             .Concat(context.ResponseMessages ?? [])
@@ -78,6 +89,8 @@ public sealed class SqliteChatHistoryProvider(
     private async Task<IReadOnlyList<ChatMessage>> LoadMessagesAsync(
         string sessionId,
         bool preferCompactedSnapshot,
+        bool includeReasoning,
+        string? compatibilityGroup,
         CancellationToken cancellationToken)
     {
         if (preferCompactedSnapshot)
@@ -109,11 +122,47 @@ public sealed class SqliteChatHistoryProvider(
             })
             .ToListAsync(cancellationToken);
 
-        return storedMessages.Select(message => new ChatMessage(ToChatRole(message.Role), message.Content)
+        var messages = storedMessages.Select(message => new ChatMessage(ToChatRole(message.Role), message.Content)
         {
             MessageId = message.Id,
             CreatedAt = message.CreatedAt
         }).ToList();
+
+        if (!includeReasoning)
+        {
+            return messages;
+        }
+
+        var traceQuery = dbContext.ReasoningTraces.AsNoTracking()
+            .Where(trace => trace.SessionId == sessionId);
+        if (!string.IsNullOrWhiteSpace(compatibilityGroup))
+        {
+            var sessionModelGroup = await dbContext.ChatSessions.AsNoTracking()
+                .Where(session => session.SessionId == sessionId && session.ModelCompatibilityGroup == compatibilityGroup)
+                .Select(session => session.ModelCompatibilityGroup)
+                .FirstOrDefaultAsync(cancellationToken);
+            if (string.IsNullOrWhiteSpace(sessionModelGroup))
+            {
+                return messages;
+            }
+        }
+
+        var traces = await traceQuery
+            .OrderBy(trace => trace.TurnSequence)
+            .ToListAsync(cancellationToken);
+        var assistantMessages = messages
+            .Where(message => message.Role == ChatRole.Assistant)
+            .ToList();
+        for (var index = 0; index < traces.Count && index < assistantMessages.Count; index++)
+        {
+            var reasoning = ExtractReasoningText(traces[index].ReasoningContentJson);
+            if (!string.IsNullOrWhiteSpace(reasoning))
+            {
+                assistantMessages[index].Contents.Insert(0, new TextReasoningContent(reasoning));
+            }
+        }
+
+        return messages;
     }
 
     private async Task<ContextPolicyDto> LoadStoredContextPolicyAsync(string sessionId, CancellationToken cancellationToken)
@@ -163,6 +212,21 @@ public sealed class SqliteChatHistoryProvider(
         catch (JsonException)
         {
             return [];
+        }
+    }
+
+    private static string ExtractReasoningText(string json)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            return document.RootElement.TryGetProperty("text", out var text)
+                ? text.GetString() ?? ""
+                : "";
+        }
+        catch (JsonException)
+        {
+            return "";
         }
     }
 }

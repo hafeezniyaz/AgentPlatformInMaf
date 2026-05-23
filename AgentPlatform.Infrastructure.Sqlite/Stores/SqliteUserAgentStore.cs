@@ -46,6 +46,7 @@ public sealed partial class SqliteUserAgentStore(AgentPlatformDbContext dbContex
             MiddlewareIdsJson = JsonList.Write(request.MiddlewareIds),
             SkillIdsJson = JsonList.Write(request.SkillIds),
             ContextPolicyJson = WriteContextPolicy(request.ContextPolicy),
+            ThinkingPolicyJson = WriteThinkingPolicy(request.ThinkingPolicy),
             CreatedAt = now,
             UpdatedAt = now
         };
@@ -71,6 +72,7 @@ public sealed partial class SqliteUserAgentStore(AgentPlatformDbContext dbContex
         entity.MiddlewareIdsJson = JsonList.Write(request.MiddlewareIds);
         entity.SkillIdsJson = JsonList.Write(request.SkillIds);
         entity.ContextPolicyJson = WriteContextPolicy(request.ContextPolicy);
+        entity.ThinkingPolicyJson = WriteThinkingPolicy(request.ThinkingPolicy);
         entity.UpdatedAt = DateTimeOffset.UtcNow;
 
         await dbContext.SaveChangesAsync(cancellationToken);
@@ -93,7 +95,8 @@ public sealed partial class SqliteUserAgentStore(AgentPlatformDbContext dbContex
             AllowedSkillIds: [],
             ReadContextPolicy(entity.ContextPolicyJson),
             entity.CreatedAt,
-            entity.UpdatedAt);
+            entity.UpdatedAt,
+            ReadThinkingPolicy(entity.ThinkingPolicyJson));
 
     private static string? WriteContextPolicy(ContextPolicyDto? contextPolicy)
         => contextPolicy is null ? null : JsonSerializer.Serialize(contextPolicy, JsonOptions);
@@ -102,6 +105,14 @@ public sealed partial class SqliteUserAgentStore(AgentPlatformDbContext dbContex
         => string.IsNullOrWhiteSpace(json)
             ? null
             : JsonSerializer.Deserialize<ContextPolicyDto>(json, JsonOptions);
+
+    private static string? WriteThinkingPolicy(ThinkingPolicyDto? thinkingPolicy)
+        => thinkingPolicy is null ? null : JsonSerializer.Serialize(thinkingPolicy, JsonOptions);
+
+    private static ThinkingPolicyDto? ReadThinkingPolicy(string? json)
+        => string.IsNullOrWhiteSpace(json)
+            ? null
+            : JsonSerializer.Deserialize<ThinkingPolicyDto>(json, JsonOptions);
 
     private static string Slugify(string value)
     {

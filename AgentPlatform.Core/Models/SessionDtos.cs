@@ -24,6 +24,12 @@ public sealed record SessionDetailsDto(
     string ContextMode,
     string ContextProfile,
     ContextCompactionStatsDto? LastCompactionStats,
+    ThinkingPolicyDto ThinkingPolicy,
+    string ThinkingMode,
+    string ThinkingCapture,
+    int ReasoningTraceCount,
+    int LastReasoningTokenEstimate,
+    ModelDefinitionDto Model,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
     IReadOnlyList<ChatMessageDto> Messages);

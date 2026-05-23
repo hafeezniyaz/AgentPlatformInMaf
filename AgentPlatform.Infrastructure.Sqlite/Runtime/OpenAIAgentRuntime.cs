@@ -29,13 +29,13 @@ public sealed class OpenAIAgentRuntime(
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {
         var apiKey = configuration["OPENAI_API_KEY"] ?? Environment.GetEnvironmentVariable("OPENAI_API_KEY");
-        if (string.IsNullOrWhiteSpace(apiKey))
+        if (string.IsNullOrWhiteSpace(apiKey) &&
+            !string.Equals(run.ResolvedModel.Provider, "vllm", StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidOperationException("OPENAI_API_KEY is not configured.");
         }
 
-        var client = new OpenAIClient(apiKey);
-        var chatClient = client.GetChatClient(run.Model).AsIChatClient();
+        var chatClient = CreateChatClient(run, apiKey);
         var tools = BuildTools(run.ToolIds);
         var contextProviders = BuildSkillProviders(run.SkillIds);
 
@@ -60,17 +60,48 @@ public sealed class OpenAIAgentRuntime(
         session.StateBag.SetValue(SqliteChatHistoryProvider.SessionIdStateKey, run.SessionId);
         session.StateBag.SetValue(SqliteChatHistoryProvider.ContextModeStateKey, run.ContextPolicy.Mode ?? "inFlight");
         session.StateBag.SetValue(SqliteChatHistoryProvider.ContextPolicyStateKey, JsonSerializer.Serialize(run.ContextPolicy, JsonOptions));
+        session.StateBag.SetValue(SqliteChatHistoryProvider.ThinkingModeStateKey, run.ThinkingPolicy.Mode ?? "disabled");
+        session.StateBag.SetValue(SqliteChatHistoryProvider.ModelCompatibilityGroupStateKey, run.ResolvedModel.CompatibilityGroup);
 
         var startedAt = DateTimeOffset.UtcNow;
         var assistantMessage = new StringBuilder();
+        var reasoningStarted = false;
 
         await foreach (var update in agent.RunStreamingAsync(run.Message, session, cancellationToken: cancellationToken))
         {
+            foreach (var reasoning in update.Contents.OfType<TextReasoningContent>())
+            {
+                if (!string.IsNullOrEmpty(reasoning.Text))
+                {
+                    if (!reasoningStarted)
+                    {
+                        reasoningStarted = true;
+                        yield return new RuntimeStreamEvent(
+                            "reasoning.started",
+                            new { },
+                            ExposeToClient: run.ThinkingPolicy.ExposeToClient ?? false);
+                    }
+
+                    yield return new RuntimeStreamEvent(
+                        "reasoning.delta",
+                        new ReasoningDeltaPayload(reasoning.Text),
+                        ExposeToClient: run.ThinkingPolicy.ExposeToClient ?? false);
+                }
+            }
+
             if (!string.IsNullOrEmpty(update.Text))
             {
                 assistantMessage.Append(update.Text);
                 yield return new RuntimeStreamEvent("text.delta", new TextDeltaPayload(update.Text));
             }
+        }
+
+        if (reasoningStarted)
+        {
+            yield return new RuntimeStreamEvent(
+                "reasoning.completed",
+                new { },
+                ExposeToClient: run.ThinkingPolicy.ExposeToClient ?? false);
         }
 
         var serialized = await agent.SerializeSessionAsync(session, cancellationToken: cancellationToken);
@@ -81,6 +112,30 @@ public sealed class OpenAIAgentRuntime(
             : completed;
 
         yield return new RuntimeStreamEvent("run.completed", payload, serialized.GetRawText());
+    }
+
+    private IChatClient CreateChatClient(AgentRunSpec run, string? apiKey)
+    {
+        if (string.Equals(run.ResolvedModel.Provider, "vllm", StringComparison.OrdinalIgnoreCase))
+        {
+            if (string.IsNullOrWhiteSpace(run.ResolvedModel.BaseUrl))
+            {
+                throw new InvalidOperationException($"Model '{run.ResolvedModel.Id}' is configured for vLLM but has no BaseUrl.");
+            }
+
+            var endpoint = new Uri(run.ResolvedModel.BaseUrl.TrimEnd('/') + "/");
+            var httpClient = new HttpClient { BaseAddress = endpoint };
+            var vllmApiKey = configuration["VLLM_API_KEY"] ?? Environment.GetEnvironmentVariable("VLLM_API_KEY");
+            if (!string.IsNullOrWhiteSpace(vllmApiKey))
+            {
+                httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", vllmApiKey);
+            }
+
+            return new VllmOpenAICompatibleChatClient(httpClient, endpoint, run.ResolvedModel.Id, run.ThinkingPolicy);
+        }
+
+        var client = new OpenAIClient(apiKey);
+        return client.GetChatClient(run.Model).AsIChatClient();
     }
 
     private AIAgent CreateAgent(IChatClient chatClient, ChatClientAgentOptions agentOptions, ContextPolicyDto contextPolicy)

@@ -47,6 +47,25 @@ public interface IContextPolicyResolver
     ContextPolicyDto Resolve(ContextPolicyDto? overridePolicy);
 }
 
+public interface IThinkingPolicyResolver
+{
+    ThinkingCapabilitiesDto GetCapabilities();
+
+    ThinkingPolicyDto GetDefaultPolicy();
+
+    ThinkingPolicyDto Resolve(
+        ThinkingPolicyDto? sessionPolicy,
+        ThinkingPolicyDto? agentPolicy,
+        ThinkingPolicyDto? modelPolicy);
+}
+
+public interface IModelCatalog
+{
+    IReadOnlyList<ModelDefinitionDto> ListModels();
+
+    ResolvedModel Resolve(string? modelId);
+}
+
 public interface IConversationStore
 {
     Task<IReadOnlyList<SessionSummaryDto>> ListSessionsAsync(
@@ -73,11 +92,20 @@ public interface IConversationStore
         IReadOnlyList<string> middlewareIds,
         IReadOnlyList<string> skillIds,
         ContextPolicyDto contextPolicy,
+        ThinkingPolicyDto thinkingPolicy,
+        ResolvedModel model,
         CancellationToken cancellationToken);
 
     Task AddMessageAsync(string sessionId, string role, string content, CancellationToken cancellationToken);
 
     Task AddRunEventAsync(string sessionId, string eventName, object payload, CancellationToken cancellationToken);
+
+    Task UpdateSessionConfigurationAsync(
+        string sessionId,
+        string configHash,
+        ThinkingPolicyDto thinkingPolicy,
+        ResolvedModel model,
+        CancellationToken cancellationToken);
 
     Task UpdateSessionAfterRunAsync(
         string sessionId,
@@ -86,6 +114,19 @@ public interface IConversationStore
         string? compactedPromptSnapshotJson,
         ContextCompactionStatsDto? compactionStats,
         CancellationToken cancellationToken);
+}
+
+public interface IReasoningTraceStore
+{
+    Task<IReadOnlyList<ReasoningTraceDto>> GetForSessionAsync(
+        string sessionId,
+        string? compatibilityGroup,
+        int limit,
+        CancellationToken cancellationToken);
+
+    Task SaveAsync(ReasoningTraceWriteDto trace, CancellationToken cancellationToken);
+
+    Task PruneOrCompactAsync(string sessionId, ThinkingPolicyDto policy, CancellationToken cancellationToken);
 }
 
 public sealed record StoredSession(
@@ -101,4 +142,10 @@ public sealed record StoredSession(
     string ContextMode,
     string ContextProfile,
     string? CompactedPromptSnapshotJson,
-    ContextCompactionStatsDto? LastCompactionStats);
+    ContextCompactionStatsDto? LastCompactionStats,
+    ThinkingPolicyDto ThinkingPolicy,
+    string ThinkingMode,
+    string ThinkingCapture,
+    int ReasoningTraceCount,
+    int LastReasoningTokenEstimate,
+    ResolvedModel Model);

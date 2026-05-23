@@ -1,3 +1,5 @@
+using AgentPlatform.Core.Models;
+
 namespace AgentPlatform.Core.Runtime;
 
 public sealed class AgentPlatformOptions
@@ -7,6 +9,10 @@ public sealed class AgentPlatformOptions
     public string SkillsPath { get; set; } = "skills";
 
     public ContextManagementOptions Context { get; set; } = new();
+
+    public ThinkingOptions Thinking { get; set; } = new();
+
+    public List<ModelOptions> Models { get; set; } = [];
 }
 
 public sealed class ContextManagementOptions
@@ -36,4 +42,34 @@ public sealed class ContextManagementOptions
     public int TruncationMinimumPreservedGroups { get; set; } = 32;
 
     public string? SummarizationPrompt { get; set; }
+}
+
+public sealed class ThinkingOptions
+{
+    public bool Enabled { get; set; }
+
+    public string Mode { get; set; } = "disabled";
+
+    public string Capture { get; set; } = "opaque";
+
+    public bool ExposeToClient { get; set; }
+
+    public int MaxPreservedTokens { get; set; } = 24000;
+
+    public string? RawRequestOptionsJson { get; set; }
+}
+
+public sealed class ModelOptions
+{
+    public string Id { get; set; } = "";
+
+    public string Provider { get; set; } = "openai";
+
+    public string? BaseUrl { get; set; }
+
+    public string? CompatibilityGroup { get; set; }
+
+    public int? ContextWindowTokens { get; set; }
+
+    public ThinkingPolicyDto? ThinkingPolicy { get; set; }
 }

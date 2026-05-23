@@ -11,13 +11,16 @@ public sealed record AgentRunSpec(
     IReadOnlyList<string> MiddlewareIds,
     IReadOnlyList<string> SkillIds,
     ContextPolicyDto ContextPolicy,
+    ThinkingPolicyDto ThinkingPolicy,
+    ResolvedModel ResolvedModel,
     string Message,
     string ConfigHash);
 
 public sealed record RuntimeStreamEvent(
     string Event,
     object Data,
-    string? SerializedSessionState = null);
+    string? SerializedSessionState = null,
+    bool ExposeToClient = true);
 
 public interface IAgentRuntime
 {

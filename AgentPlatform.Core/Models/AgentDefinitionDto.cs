@@ -15,7 +15,8 @@ public sealed record AgentDefinitionDto(
     IReadOnlyList<string> AllowedSkillIds,
     ContextPolicyDto? ContextPolicy,
     DateTimeOffset CreatedAt,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    ThinkingPolicyDto? ThinkingPolicy = null);
 
 public sealed record CreateAgentRequest(
     string Name,
@@ -25,7 +26,8 @@ public sealed record CreateAgentRequest(
     IReadOnlyList<string>? ToolIds,
     IReadOnlyList<string>? MiddlewareIds,
     IReadOnlyList<string>? SkillIds,
-    ContextPolicyDto? ContextPolicy = null);
+    ContextPolicyDto? ContextPolicy = null,
+    ThinkingPolicyDto? ThinkingPolicy = null);
 
 public sealed record UpdateAgentRequest(
     string Name,
@@ -35,4 +37,5 @@ public sealed record UpdateAgentRequest(
     IReadOnlyList<string>? ToolIds,
     IReadOnlyList<string>? MiddlewareIds,
     IReadOnlyList<string>? SkillIds,
-    ContextPolicyDto? ContextPolicy = null);
+    ContextPolicyDto? ContextPolicy = null,
+    ThinkingPolicyDto? ThinkingPolicy = null);

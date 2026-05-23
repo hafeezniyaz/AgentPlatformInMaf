@@ -22,6 +22,8 @@ public sealed class UserAgentEntity
 
     public string? ContextPolicyJson { get; set; }
 
+    public string? ThinkingPolicyJson { get; set; }
+
     public DateTimeOffset CreatedAt { get; set; }
 
     public DateTimeOffset UpdatedAt { get; set; }

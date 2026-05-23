@@ -13,6 +13,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using System.Text.Json;
 
 namespace AgentPlatform.Tests;
 
@@ -37,6 +38,9 @@ public sealed class AgentPlatformTests
         Assert.Contains("inFlight", result.Context.SupportedModes);
         Assert.Contains("balanced", result.Context.SupportedProfiles);
         Assert.Equal("inFlight", result.Context.DefaultPolicy.Mode);
+        Assert.Contains("preserved", result.Thinking.SupportedModes);
+        Assert.Contains("opaque", result.Thinking.SupportedCaptures);
+        Assert.Contains(result.Models, model => model.Id == "test-model");
     }
 
     [Fact]
@@ -89,6 +93,55 @@ public sealed class AgentPlatformTests
         Assert.Equal(7, resolved.SlidingWindowMaxTurns);
         Assert.Equal(0x8000, resolved.TruncationTokenThreshold);
         Assert.Throws<AgentPlatformValidationException>(() => resolver.Resolve(new ContextPolicyDto { Mode = "missing" }));
+    }
+
+    [Fact]
+    public async Task Thinking_policy_resolver_merges_defaults_and_rejects_invalid_values()
+    {
+        await using var fixture = await TestFixture.CreateAsync();
+        var resolver = fixture.Services.GetRequiredService<IThinkingPolicyResolver>();
+
+        using var raw = JsonDocument.Parse("""{"enable_thinking":true}""");
+        var resolved = resolver.Resolve(
+            sessionPolicy: null,
+            agentPolicy: new ThinkingPolicyDto
+            {
+                Enabled = true,
+                Mode = "preserved",
+                Capture = "full",
+                RawRequestOptionsJson = raw.RootElement
+            },
+            modelPolicy: null);
+
+        Assert.True(resolved.Enabled);
+        Assert.Equal("preserved", resolved.Mode);
+        Assert.Equal("full", resolved.Capture);
+        Assert.Equal(24000, resolved.MaxPreservedTokens);
+        Assert.Equal(JsonValueKind.Object, resolved.RawRequestOptionsJson?.ValueKind);
+        Assert.Throws<AgentPlatformValidationException>(() => resolver.Resolve(null, new ThinkingPolicyDto { Mode = "missing" }, null));
+        Assert.Throws<AgentPlatformValidationException>(() => resolver.Resolve(null, new ThinkingPolicyDto { Enabled = false, Mode = "preserved" }, null));
+    }
+
+    [Fact]
+    public void Vllm_raw_request_options_merge_at_root_and_reject_protected_keys()
+    {
+        using var raw = JsonDocument.Parse("""{"enable_thinking":true,"preserve_thinking":true}""");
+        var body = VllmOpenAICompatibleChatClient.BuildRequestBody(
+            "qwen3.6-plus",
+            [new Microsoft.Extensions.AI.ChatMessage(Microsoft.Extensions.AI.ChatRole.User, "hello")],
+            null,
+            new ThinkingPolicyDto { RawRequestOptionsJson = raw.RootElement });
+
+        Assert.True(((JsonElement)body["enable_thinking"]!).GetBoolean());
+        Assert.True(((JsonElement)body["preserve_thinking"]!).GetBoolean());
+
+        using var invalid = JsonDocument.Parse("""{"model":"override"}""");
+        Assert.Throws<AgentPlatformValidationException>(() =>
+            VllmOpenAICompatibleChatClient.BuildRequestBody(
+                "qwen3.6-plus",
+                [new Microsoft.Extensions.AI.ChatMessage(Microsoft.Extensions.AI.ChatRole.User, "hello")],
+                null,
+                new ThinkingPolicyDto { RawRequestOptionsJson = invalid.RootElement }));
     }
 
     [Fact]
@@ -299,6 +352,8 @@ public sealed class AgentPlatformTests
             [],
             [],
             contextPolicy,
+            new ThinkingPolicyDto { Enabled = false, Mode = "disabled", Capture = "opaque", ExposeToClient = false, MaxPreservedTokens = 24000 },
+            new ResolvedModel("test-model", "openai", null, "test-model", null, null),
             CancellationToken.None);
         await store.AddMessageAsync(stored.SessionId, "user", "Full user message", CancellationToken.None);
         await store.AddMessageAsync(stored.SessionId, "assistant", "Full assistant response", CancellationToken.None);
@@ -321,6 +376,82 @@ public sealed class AgentPlatformTests
         Assert.Equal("Full user message", rehydrated.Messages[0].Content);
         Assert.Equal("[]", refreshed.CompactedPromptSnapshotJson);
         Assert.Equal(3, rehydrated.LastCompactionStats?.CompactedMessageCount);
+    }
+
+    [Fact]
+    public async Task Preserved_thinking_stores_reasoning_without_leaking_into_chat_history()
+    {
+        await using var fixture = await TestFixture.CreateAsync();
+        var catalog = fixture.Services.GetRequiredService<IAgentCatalogService>();
+        var orchestrator = fixture.Services.GetRequiredService<AgentRunOrchestrator>();
+        var store = fixture.Services.GetRequiredService<IConversationStore>();
+        var traces = fixture.Services.GetRequiredService<IReasoningTraceStore>();
+
+        var agent = await catalog.CreateAgentAsync(
+            new CreateAgentRequest(
+                "Thinking Agent",
+                "Uses hidden reasoning",
+                "Answer briefly.",
+                null,
+                [],
+                [],
+                [],
+                null,
+                new ThinkingPolicyDto { Enabled = true, Mode = "preserved", Capture = "full", ExposeToClient = false }),
+            CancellationToken.None);
+
+        var events = new List<RunStreamEvent>();
+        await foreach (var streamEvent in orchestrator.StreamAsync(
+            new StreamRunRequest(null, agent.Id, null, null, null, "think privately", null),
+            CancellationToken.None))
+        {
+            events.Add(streamEvent);
+        }
+
+        var sessionId = Assert.Single(events, item => item.Event == "run.started").SessionId;
+        var session = await store.GetSessionAsync(sessionId, CancellationToken.None);
+        var savedTraces = await traces.GetForSessionAsync(sessionId, null, 10, CancellationToken.None);
+
+        Assert.DoesNotContain(events, item => item.Event == "reasoning.delta");
+        Assert.NotNull(session);
+        Assert.Equal(2, session.Messages.Count);
+        Assert.DoesNotContain(session.Messages, message => message.Content.Contains("private reasoning", StringComparison.OrdinalIgnoreCase));
+        Assert.Single(savedTraces);
+        Assert.Contains("private reasoning", savedTraces[0].ReasoningContentJson);
+        Assert.Equal(1, session.ReasoningTraceCount);
+    }
+
+    [Fact]
+    public async Task Expose_to_client_true_streams_reasoning_events()
+    {
+        await using var fixture = await TestFixture.CreateAsync();
+        var catalog = fixture.Services.GetRequiredService<IAgentCatalogService>();
+        var orchestrator = fixture.Services.GetRequiredService<AgentRunOrchestrator>();
+
+        var agent = await catalog.CreateAgentAsync(
+            new CreateAgentRequest(
+                "Debug Thinking Agent",
+                "Streams reasoning",
+                "Answer briefly.",
+                null,
+                [],
+                [],
+                [],
+                null,
+                new ThinkingPolicyDto { Enabled = true, Mode = "preserved", Capture = "full", ExposeToClient = true }),
+            CancellationToken.None);
+
+        var events = new List<RunStreamEvent>();
+        await foreach (var streamEvent in orchestrator.StreamAsync(
+            new StreamRunRequest(null, agent.Id, null, null, null, "show debug thinking", null),
+            CancellationToken.None))
+        {
+            events.Add(streamEvent);
+        }
+
+        Assert.Contains(events, item => item.Event == "reasoning.started");
+        Assert.Contains(events, item => item.Event == "reasoning.delta");
+        Assert.Contains(events, item => item.Event == "reasoning.completed");
     }
 
     [Fact]
@@ -396,6 +527,7 @@ public sealed class AgentPlatformTests
             services.AddDbContext<AgentPlatformDbContext>(options => options.UseSqlite(connection));
             services.AddScoped<IUserAgentStore, SqliteUserAgentStore>();
             services.AddScoped<IConversationStore, SqliteConversationStore>();
+            services.AddScoped<IReasoningTraceStore, SqliteReasoningTraceStore>();
             services.AddSingleton<IPrebuiltAgentDefinition, GeneralAssistantAgent>();
             services.AddSingleton<IPrebuiltAgentDefinition, AgentBuilderAgent>();
             services.AddSingleton<IStaticCatalog, DefaultStaticCatalog>();
@@ -422,6 +554,22 @@ public sealed class AgentPlatformTests
             [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
         {
             await Task.Yield();
+            if (run.ThinkingPolicy.Enabled is true)
+            {
+                yield return new RuntimeStreamEvent(
+                    "reasoning.started",
+                    new { },
+                    ExposeToClient: run.ThinkingPolicy.ExposeToClient ?? false);
+                yield return new RuntimeStreamEvent(
+                    "reasoning.delta",
+                    new ReasoningDeltaPayload("private reasoning"),
+                    ExposeToClient: run.ThinkingPolicy.ExposeToClient ?? false);
+                yield return new RuntimeStreamEvent(
+                    "reasoning.completed",
+                    new { },
+                    ExposeToClient: run.ThinkingPolicy.ExposeToClient ?? false);
+            }
+
             yield return new RuntimeStreamEvent("text.delta", new TextDeltaPayload($"Echo: {run.Message}"));
             yield return new RuntimeStreamEvent("run.completed", new RunCompletedPayload(""), "{\"state\":\"ok\"}");
         }

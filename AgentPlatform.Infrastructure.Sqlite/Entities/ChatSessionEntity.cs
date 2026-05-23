@@ -34,6 +34,26 @@ public sealed class ChatSessionEntity
 
     public DateTimeOffset? LastCompactedAt { get; set; }
 
+    public string ThinkingPolicyJson { get; set; } = "{}";
+
+    public string ThinkingMode { get; set; } = "disabled";
+
+    public string ThinkingCapture { get; set; } = "opaque";
+
+    public int ReasoningTraceCount { get; set; }
+
+    public int LastReasoningTokenEstimate { get; set; }
+
+    public string ModelId { get; set; } = "";
+
+    public string ModelProvider { get; set; } = "openai";
+
+    public string? ModelBaseUrl { get; set; }
+
+    public string ModelCompatibilityGroup { get; set; } = "";
+
+    public int? ModelContextWindowTokens { get; set; }
+
     public bool IsArchived { get; set; }
 
     public DateTimeOffset CreatedAt { get; set; }
