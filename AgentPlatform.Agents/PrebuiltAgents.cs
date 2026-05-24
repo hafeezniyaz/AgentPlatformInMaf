@@ -1,6 +1,7 @@
 using AgentPlatform.Core.Models;
 using AgentPlatform.Core.Services;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace AgentPlatform.Agents;
 
@@ -71,9 +72,18 @@ public static class AgentsDependencyInjection
 {
     public static IServiceCollection AddPrebuiltAgentCatalog(this IServiceCollection services)
     {
-        services.AddSingleton<IPrebuiltAgentDefinition, GeneralAssistantAgent>();
-        services.AddSingleton<IPrebuiltAgentDefinition, AgentBuilderAgent>();
-        services.AddSingleton<IStaticCatalog, DefaultStaticCatalog>();
+        var agentTypes = typeof(AgentsDependencyInjection).Assembly.GetTypes()
+            .Where(type =>
+                !type.IsAbstract &&
+                !type.IsInterface &&
+                typeof(IPrebuiltAgentDefinition).IsAssignableFrom(type));
+
+        foreach (var agentType in agentTypes)
+        {
+            services.AddSingleton(typeof(IPrebuiltAgentDefinition), agentType);
+        }
+
+        services.TryAddSingleton<IStaticCatalog, DefaultStaticCatalog>();
         return services;
     }
 }

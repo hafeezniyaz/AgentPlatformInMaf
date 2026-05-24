@@ -16,4 +16,8 @@
     <ProjectReference Include="..\AgentPlatform.Agents\AgentPlatform.Agents.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Update="agents.prebuilt.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+	
 </Project>

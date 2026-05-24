@@ -73,3 +73,39 @@ public sealed class ModelOptions
 
     public ThinkingPolicyDto? ThinkingPolicy { get; set; }
 }
+
+public sealed class PrebuiltAgentCatalogOptions
+{
+    public List<PrebuiltAgentConfig> Agents { get; set; } = [];
+}
+
+public sealed class PrebuiltAgentConfig
+{
+    public string Id { get; set; } = "";
+
+    public bool? Enabled { get; set; }
+
+    public string? Name { get; set; }
+
+    public string? Description { get; set; }
+
+    public string? Instructions { get; set; }
+
+    public string? Model { get; set; }
+
+    public IReadOnlyList<string>? ToolIds { get; set; }
+
+    public IReadOnlyList<string>? MiddlewareIds { get; set; }
+
+    public IReadOnlyList<string>? SkillIds { get; set; }
+
+    public IReadOnlyList<string>? AllowedToolIds { get; set; }
+
+    public IReadOnlyList<string>? AllowedMiddlewareIds { get; set; }
+
+    public IReadOnlyList<string>? AllowedSkillIds { get; set; }
+
+    public ContextPolicyDto? ContextPolicy { get; set; }
+
+    public ThinkingPolicyDto? ThinkingPolicy { get; set; }
+}

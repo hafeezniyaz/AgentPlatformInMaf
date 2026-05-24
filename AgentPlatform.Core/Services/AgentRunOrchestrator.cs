@@ -31,9 +31,11 @@ public sealed class AgentRunOrchestrator(
             throw new AgentPlatformValidationException("Message is required.");
         }
 
-        var toolIds = NormalizeSelection(request.ToolIds, agent.ToolIds);
-        var middlewareIds = NormalizeSelection(request.MiddlewareIds, agent.MiddlewareIds);
-        var skillIds = NormalizeSkillSelection(request.SkillIds, agent.SkillIds, staticCatalog.Skills.Select(item => item.Id));
+        var sessionId = string.IsNullOrWhiteSpace(request.SessionId) ? Guid.NewGuid().ToString("n") : request.SessionId!;
+        var storedSession = await conversationStore.GetStoredSessionAsync(sessionId, cancellationToken);
+        var toolIds = NormalizeSelection(request.ToolIds, storedSession?.ToolIds ?? agent.ToolIds);
+        var middlewareIds = NormalizeSelection(request.MiddlewareIds, storedSession?.MiddlewareIds ?? agent.MiddlewareIds);
+        var skillIds = NormalizeSkillSelection(request.SkillIds, storedSession?.SkillIds ?? agent.SkillIds, staticCatalog.Skills.Select(item => item.Id));
         toolIds = ExpandToolsForSkills(toolIds, skillIds, staticCatalog.Skills);
 
         toolRegistry.ValidateKnown(toolIds);
@@ -43,11 +45,9 @@ public sealed class AgentRunOrchestrator(
         ValidateAllowed("middleware", middlewareIds, agent.AllowedMiddlewareIds);
         ValidateAllowed("skill", skillIds, agent.AllowedSkillIds);
 
-        var model = string.IsNullOrWhiteSpace(request.Model) ? agent.Model : request.Model!;
+        var model = string.IsNullOrWhiteSpace(request.Model) ? storedSession?.Model.Id ?? agent.Model : request.Model!;
         var resolvedModel = modelCatalog.Resolve(model);
         var instructions = BuildInstructions(agent.Instructions, middlewareIds);
-        var sessionId = string.IsNullOrWhiteSpace(request.SessionId) ? Guid.NewGuid().ToString("n") : request.SessionId!;
-        var storedSession = await conversationStore.GetStoredSessionAsync(sessionId, cancellationToken);
         var modelChanged = storedSession is not null &&
             !string.Equals(storedSession.Model.Id, resolvedModel.Id, StringComparison.OrdinalIgnoreCase);
         var resolvedContextPolicy = storedSession?.ContextPolicy ?? contextPolicyResolver.Resolve(agent.ContextPolicy);

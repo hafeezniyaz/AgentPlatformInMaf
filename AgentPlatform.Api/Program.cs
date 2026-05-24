@@ -2,12 +2,14 @@ using System.Text.Json;
 using AgentPlatform.Agents;
 using AgentPlatform.Core;
 using AgentPlatform.Core.Models;
+using AgentPlatform.Core.Runtime;
 using AgentPlatform.Core.Services;
 using AgentPlatform.Infrastructure.Sqlite;
 using AgentPlatform.Infrastructure.Sqlite.Data;
 using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
+builder.Configuration.AddJsonFile("agents.prebuilt.json", optional: true, reloadOnChange: true);
 
 builder.Services.AddOpenApi();
 builder.Services.AddCors(options =>
@@ -19,6 +21,7 @@ builder.Services.AddCors(options =>
 });
 
 builder.Services
+    .Configure<PrebuiltAgentCatalogOptions>(builder.Configuration.GetSection("PrebuiltAgents"))
     .AddAgentPlatformCore()
     .AddPrebuiltAgentCatalog()
     .AddAgentPlatformSqlite(builder.Configuration);

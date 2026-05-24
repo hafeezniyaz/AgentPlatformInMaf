@@ -47,6 +47,151 @@ public sealed class AgentPlatformTests
     }
 
     [Fact]
+    public async Task Prebuilt_agent_catalog_auto_discovers_code_agents()
+    {
+        await using var fixture = await TestFixture.CreateAsync();
+        var discovered = fixture.Services.GetServices<IPrebuiltAgentDefinition>().ToList();
+        var catalog = fixture.Services.GetRequiredService<IAgentCatalogService>();
+
+        var result = await catalog.GetCatalogAsync(CancellationToken.None);
+
+        Assert.Contains(discovered, agent => agent.Descriptor.Id == "general-assistant");
+        Assert.Contains(discovered, agent => agent.Descriptor.Id == "agent-builder");
+        Assert.Contains(result.Agents, agent => agent.Id == "general-assistant" && agent.Source == "code");
+        Assert.Contains(result.Agents, agent => agent.Id == "agent-builder" && agent.Source == "code");
+    }
+
+    [Fact]
+    public async Task Prebuilt_agent_config_overrides_descriptor_fields()
+    {
+        await using var fixture = await TestFixture.CreateAsync(prebuiltOptions =>
+        {
+            prebuiltOptions.Agents.Add(new PrebuiltAgentConfig
+            {
+                Id = "general-assistant",
+                Name = "Configured Assistant",
+                Description = "Configured description",
+                Instructions = "Configured instructions",
+                Model = "configured-model",
+                ToolIds = ["weather"],
+                MiddlewareIds = ["logging"],
+                SkillIds = ["agent-design"],
+                AllowedToolIds = ["clock", "weather"],
+                AllowedMiddlewareIds = ["logging"],
+                AllowedSkillIds = ["agent-design"],
+                ContextPolicy = new ContextPolicyDto { Mode = "persistedPrompt", Profile = "cheapNoLlm" },
+                ThinkingPolicy = new ThinkingPolicyDto { Enabled = true, Mode = "preserved", Capture = "full" }
+            });
+        });
+        var catalog = fixture.Services.GetRequiredService<IAgentCatalogService>();
+
+        var agent = await catalog.GetAgentAsync("general-assistant", CancellationToken.None);
+
+        Assert.NotNull(agent);
+        Assert.Equal("general-assistant", agent.Id);
+        Assert.Equal("code", agent.Source);
+        Assert.Equal("Configured Assistant", agent.Name);
+        Assert.Equal("Configured description", agent.Description);
+        Assert.Equal("Configured instructions", agent.Instructions);
+        Assert.Equal("configured-model", agent.Model);
+        Assert.Equal(["weather"], agent.ToolIds);
+        Assert.Equal(["logging"], agent.MiddlewareIds);
+        Assert.Equal(["agent-design"], agent.SkillIds);
+        Assert.Equal(["clock", "weather"], agent.AllowedToolIds);
+        Assert.Equal("persistedPrompt", agent.ContextPolicy?.Mode);
+        Assert.Equal("preserved", agent.ThinkingPolicy?.Mode);
+    }
+
+    [Fact]
+    public async Task Prebuilt_agent_config_missing_fields_inherit_descriptor_values()
+    {
+        await using var fixture = await TestFixture.CreateAsync(prebuiltOptions =>
+        {
+            prebuiltOptions.Agents.Add(new PrebuiltAgentConfig
+            {
+                Id = "general-assistant",
+                Name = "Renamed Assistant"
+            });
+        });
+        var catalog = fixture.Services.GetRequiredService<IAgentCatalogService>();
+
+        var agent = await catalog.GetAgentAsync("general-assistant", CancellationToken.None);
+
+        Assert.NotNull(agent);
+        Assert.Equal("Renamed Assistant", agent.Name);
+        Assert.Equal("gpt-4o-mini", agent.Model);
+        Assert.Equal(["clock", "calculator"], agent.ToolIds);
+        Assert.Contains("helpful agentic assistant", agent.Instructions);
+    }
+
+    [Fact]
+    public async Task Disabled_prebuilt_agent_is_hidden_from_catalog_and_lookup()
+    {
+        await using var fixture = await TestFixture.CreateAsync(prebuiltOptions =>
+        {
+            prebuiltOptions.Agents.Add(new PrebuiltAgentConfig
+            {
+                Id = "general-assistant",
+                Enabled = false
+            });
+        });
+        var catalog = fixture.Services.GetRequiredService<IAgentCatalogService>();
+
+        var result = await catalog.GetCatalogAsync(CancellationToken.None);
+        var agent = await catalog.GetAgentAsync("general-assistant", CancellationToken.None);
+
+        Assert.DoesNotContain(result.Agents, item => item.Id == "general-assistant");
+        Assert.Null(agent);
+        Assert.Contains(result.Agents, item => item.Id == "agent-builder");
+    }
+
+    [Fact]
+    public async Task Duplicate_prebuilt_agent_ids_fail_clearly()
+    {
+        await using var fixture = await TestFixture.CreateAsync(
+            configureServices: services => services.AddSingleton<IPrebuiltAgentDefinition>(
+                new TestPrebuiltAgent("general-assistant")));
+
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            fixture.Services.GetRequiredService<IAgentCatalogService>());
+
+        Assert.Contains("Duplicate prebuilt agent id 'general-assistant'", ex.Message);
+    }
+
+    [Fact]
+    public async Task Unknown_prebuilt_agent_config_id_fails_clearly()
+    {
+        await using var fixture = await TestFixture.CreateAsync(prebuiltOptions =>
+        {
+            prebuiltOptions.Agents.Add(new PrebuiltAgentConfig
+            {
+                Id = "missing-agent",
+                Name = "Missing Agent"
+            });
+        });
+
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            fixture.Services.GetRequiredService<IAgentCatalogService>());
+
+        Assert.Contains("does not match a discovered code agent", ex.Message);
+    }
+
+    [Fact]
+    public async Task Duplicate_prebuilt_agent_config_ids_fail_clearly()
+    {
+        await using var fixture = await TestFixture.CreateAsync(prebuiltOptions =>
+        {
+            prebuiltOptions.Agents.Add(new PrebuiltAgentConfig { Id = "general-assistant", Name = "One" });
+            prebuiltOptions.Agents.Add(new PrebuiltAgentConfig { Id = "GENERAL-ASSISTANT", Name = "Two" });
+        });
+
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            fixture.Services.GetRequiredService<IAgentCatalogService>());
+
+        Assert.Contains("Duplicate prebuilt agent config id", ex.Message);
+    }
+
+    [Fact]
     public async Task User_agent_catalog_exposes_context_policy_override()
     {
         await using var fixture = await TestFixture.CreateAsync();
@@ -563,6 +708,116 @@ public sealed class AgentPlatformTests
         Assert.Contains("clock", session.ToolIds);
     }
 
+    [Fact]
+    public async Task Existing_session_empty_selections_reuse_stored_selection_snapshot()
+    {
+        await using var fixture = await TestFixture.CreateAsync();
+        var orchestrator = fixture.Services.GetRequiredService<AgentRunOrchestrator>();
+        var store = fixture.Services.GetRequiredService<IConversationStore>();
+
+        string? sessionId = null;
+        await foreach (var streamEvent in orchestrator.StreamAsync(
+            new StreamRunRequest(null, "general-assistant", [], [], ["agent-design"], "Design an agent", null),
+            CancellationToken.None))
+        {
+            sessionId ??= streamEvent.SessionId;
+        }
+
+        RunStartedPayload? continuedRun = null;
+        await foreach (var streamEvent in orchestrator.StreamAsync(
+            new StreamRunRequest(sessionId, "general-assistant", [], [], [], "Continue the design", null),
+            CancellationToken.None))
+        {
+            if (streamEvent.Event == "run.started")
+            {
+                continuedRun = Assert.IsType<RunStartedPayload>(streamEvent.Data);
+            }
+        }
+
+        var session = await store.GetSessionAsync(sessionId!, CancellationToken.None);
+
+        Assert.NotNull(session);
+        Assert.NotNull(continuedRun);
+        Assert.Contains("agent-design", session.SkillIds);
+        Assert.Contains("clock", session.ToolIds);
+        Assert.Contains("agent-design", continuedRun.SkillIds);
+        Assert.Contains("clock", continuedRun.ToolIds);
+        Assert.Equal(4, session.Messages.Count);
+    }
+
+    [Fact]
+    public async Task Existing_session_null_selections_reuse_stored_selection_snapshot()
+    {
+        await using var fixture = await TestFixture.CreateAsync();
+        var orchestrator = fixture.Services.GetRequiredService<AgentRunOrchestrator>();
+        var store = fixture.Services.GetRequiredService<IConversationStore>();
+
+        string? sessionId = null;
+        await foreach (var streamEvent in orchestrator.StreamAsync(
+            new StreamRunRequest(null, "general-assistant", ["weather"], ["logging"], ["agent-design"], "Design an agent", null),
+            CancellationToken.None))
+        {
+            sessionId ??= streamEvent.SessionId;
+        }
+
+        RunStartedPayload? continuedRun = null;
+        await foreach (var streamEvent in orchestrator.StreamAsync(
+            new StreamRunRequest(sessionId, "general-assistant", null, null, null, "Continue the design", null),
+            CancellationToken.None))
+        {
+            if (streamEvent.Event == "run.started")
+            {
+                continuedRun = Assert.IsType<RunStartedPayload>(streamEvent.Data);
+            }
+        }
+
+        var session = await store.GetSessionAsync(sessionId!, CancellationToken.None);
+
+        Assert.NotNull(session);
+        Assert.NotNull(continuedRun);
+        Assert.Equal(["agent-design"], session.SkillIds);
+        Assert.Equal(["clock", "weather"], session.ToolIds.Order(StringComparer.OrdinalIgnoreCase));
+        Assert.Equal(["logging"], continuedRun.MiddlewareIds);
+        Assert.Equal(["clock", "weather"], continuedRun.ToolIds.Order(StringComparer.OrdinalIgnoreCase));
+        Assert.DoesNotContain("calculator", continuedRun.ToolIds);
+    }
+
+    [Fact]
+    public async Task Model_switch_with_omitted_selections_reuses_stored_selection_snapshot()
+    {
+        await using var fixture = await TestFixture.CreateAsync();
+        var orchestrator = fixture.Services.GetRequiredService<AgentRunOrchestrator>();
+        var store = fixture.Services.GetRequiredService<IConversationStore>();
+
+        string? sessionId = null;
+        await foreach (var streamEvent in orchestrator.StreamAsync(
+            new StreamRunRequest(null, "general-assistant", ["weather"], ["logging"], ["agent-design"], "Design an agent", null),
+            CancellationToken.None))
+        {
+            sessionId ??= streamEvent.SessionId;
+        }
+
+        RunStartedPayload? continuedRun = null;
+        await foreach (var streamEvent in orchestrator.StreamAsync(
+            new StreamRunRequest(sessionId, "general-assistant", null, null, null, "Continue with another model", "alternate-model"),
+            CancellationToken.None))
+        {
+            if (streamEvent.Event == "run.started")
+            {
+                continuedRun = Assert.IsType<RunStartedPayload>(streamEvent.Data);
+            }
+        }
+
+        var stored = await store.GetStoredSessionAsync(sessionId!, CancellationToken.None);
+
+        Assert.NotNull(stored);
+        Assert.NotNull(continuedRun);
+        Assert.Equal("alternate-model", stored.Model.Id);
+        Assert.Equal(["agent-design"], stored.SkillIds);
+        Assert.Equal(["clock", "weather"], stored.ToolIds.Order(StringComparer.OrdinalIgnoreCase));
+        Assert.Equal(["clock", "weather"], continuedRun.ToolIds.Order(StringComparer.OrdinalIgnoreCase));
+    }
+
     private sealed class TestFixture : IAsyncDisposable
     {
         private readonly SqliteConnection _connection;
@@ -575,7 +830,9 @@ public sealed class AgentPlatformTests
 
         public ServiceProvider Services { get; }
 
-        public static async Task<TestFixture> CreateAsync()
+        public static async Task<TestFixture> CreateAsync(
+            Action<PrebuiltAgentCatalogOptions>? configurePrebuiltAgents = null,
+            Action<IServiceCollection>? configureServices = null)
         {
             var connection = new SqliteConnection("DataSource=:memory:");
             await connection.OpenAsync();
@@ -588,17 +845,20 @@ public sealed class AgentPlatformTests
                 options.DefaultModel = "test-model";
                 options.SkillsPath = "skills";
             });
+            if (configurePrebuiltAgents is not null)
+            {
+                services.Configure(configurePrebuiltAgents);
+            }
 
             services.AddDbContext<AgentPlatformDbContext>(options => options.UseSqlite(connection));
             services.AddScoped<IUserAgentStore, SqliteUserAgentStore>();
             services.AddScoped<IConversationStore, SqliteConversationStore>();
             services.AddScoped<IReasoningTraceStore, SqliteReasoningTraceStore>();
-            services.AddSingleton<IPrebuiltAgentDefinition, GeneralAssistantAgent>();
-            services.AddSingleton<IPrebuiltAgentDefinition, AgentBuilderAgent>();
-            services.AddSingleton<IStaticCatalog, DefaultStaticCatalog>();
+            services.AddPrebuiltAgentCatalog();
             services.AddAgentPlatformBuiltinTools();
             services.AddAgentPlatformCore();
             services.AddSingleton<IAgentRuntime, FakeAgentRuntime>();
+            configureServices?.Invoke(services);
 
             var provider = services.BuildServiceProvider();
             await provider.GetRequiredService<AgentPlatformDbContext>().EnsureAgentPlatformSchemaAsync();
@@ -649,5 +909,25 @@ public sealed class AgentPlatformTests
             yield return new RuntimeStreamEvent("text.delta", new TextDeltaPayload($"Echo: {run.Message}"));
             yield return new RuntimeStreamEvent("run.completed", new RunCompletedPayload(""), "{\"state\":\"ok\"}");
         }
+    }
+
+    private sealed class TestPrebuiltAgent(string id) : IPrebuiltAgentDefinition
+    {
+        public AgentDefinitionDto Descriptor { get; } = new(
+            Id: id,
+            Name: "Duplicate Agent",
+            Description: "A duplicate test agent.",
+            Source: "code",
+            Instructions: "Test instructions.",
+            Model: "test-model",
+            ToolIds: [],
+            MiddlewareIds: [],
+            SkillIds: [],
+            AllowedToolIds: [],
+            AllowedMiddlewareIds: [],
+            AllowedSkillIds: [],
+            ContextPolicy: null,
+            CreatedAt: DateTimeOffset.UnixEpoch,
+            UpdatedAt: DateTimeOffset.UnixEpoch);
     }
 }

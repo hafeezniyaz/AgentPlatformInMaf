@@ -1,0 +1,38 @@
+{
+  "PrebuiltAgents": {
+    "Agents": [
+      {
+        "Id": "general-assistant",
+        "Enabled": true,
+        "Name": "General Assistant",
+        "Description": "A configurable trusted code agent for everyday chat, planning, and tool-assisted answers.",
+        "Instructions": "You are a helpful agentic assistant. Be concise, accurate, and clear. Use tools only when they materially improve the answer.",
+        "Model": "gpt-4o-mini",
+        "ToolIds": [ "clock", "calculator" ],
+        "MiddlewareIds": [ "logging", "safety", "timing" ],
+        "SkillIds": [],
+        "AllowedToolIds": [ "clock", "calculator", "weather" ],
+        "AllowedMiddlewareIds": [ "logging", "safety", "timing" ],
+        "AllowedSkillIds": [ "agent-design" ],
+        "ContextPolicy": null,
+        "ThinkingPolicy": null
+      },
+      {
+        "Id": "agent-builder",
+        "Enabled": true,
+        "Name": "Agent Builder",
+        "Description": "Helps users design focused agents, tool sets, middleware policies, and skills.",
+        "Instructions": "You help users design agents. Ask for goals, responsibilities, tools, safety boundaries, and success criteria. Return implementable agent configurations.",
+        "Model": "gpt-4o-mini",
+        "ToolIds": [ "clock" ],
+        "MiddlewareIds": [ "logging", "safety" ],
+        "SkillIds": [ "agent-design" ],
+        "AllowedToolIds": [ "clock", "calculator" ],
+        "AllowedMiddlewareIds": [ "logging", "safety", "timing" ],
+        "AllowedSkillIds": [ "agent-design" ],
+        "ContextPolicy": null,
+        "ThinkingPolicy": null
+      }
+    ]
+  }
+}
