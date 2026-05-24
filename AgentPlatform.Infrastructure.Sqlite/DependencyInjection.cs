@@ -4,6 +4,7 @@ using AgentPlatform.Core.Services;
 using AgentPlatform.Infrastructure.Sqlite.Data;
 using AgentPlatform.Infrastructure.Sqlite.Runtime;
 using AgentPlatform.Infrastructure.Sqlite.Stores;
+using AgentPlatform.Infrastructure.Sqlite.Tools;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -25,6 +26,7 @@ public static class DependencyInjection
         services.AddScoped<ContextCompactionProviderFactory>();
         services.AddScoped<SqliteChatHistoryProvider>();
         services.AddScoped<IAgentRuntime, OpenAIAgentRuntime>();
+        services.AddAgentPlatformBuiltinTools();
         services.Configure<AgentPlatformOptions>(agentOptions =>
         {
             var section = configuration.GetSection("AgentPlatform");
@@ -73,6 +75,20 @@ public static class DependencyInjection
                 });
             }
         });
+        return services;
+    }
+
+    public static IServiceCollection AddAgentPlatformBuiltinTools(this IServiceCollection services)
+    {
+        services.AddSingleton<IClockService, SystemClockService>();
+        services.AddSingleton<IAgentToolDefinition, ClockToolDefinition>();
+
+        services.AddTransient<ICalculatorService, DataTableCalculatorService>();
+        services.AddTransient<IAgentToolDefinition, CalculatorToolDefinition>();
+
+        services.AddScoped<IWeatherService, DemoWeatherService>();
+        services.AddScoped<IAgentToolDefinition, WeatherToolDefinition>();
+
         return services;
     }
 

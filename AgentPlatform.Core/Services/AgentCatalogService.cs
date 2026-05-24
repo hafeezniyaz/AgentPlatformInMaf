@@ -8,6 +8,7 @@ public sealed class AgentCatalogService(
     IEnumerable<IPrebuiltAgentDefinition> prebuiltAgents,
     IUserAgentStore userAgentStore,
     IStaticCatalog staticCatalog,
+    IAgentToolRegistry toolRegistry,
     IOptions<AgentPlatformOptions> options,
     IContextPolicyResolver contextPolicyResolver,
     IThinkingPolicyResolver thinkingPolicyResolver,
@@ -24,7 +25,7 @@ public sealed class AgentCatalogService(
 
         return new CatalogResponse(
             agents,
-            staticCatalog.Tools,
+            toolRegistry.ListTools(),
             staticCatalog.Middleware,
             staticCatalog.Skills,
             contextPolicyResolver.GetCapabilities(),

@@ -3,10 +3,13 @@ using AgentPlatform.Core;
 using AgentPlatform.Core.Models;
 using AgentPlatform.Core.Runtime;
 using AgentPlatform.Core.Services;
+using AgentPlatform.Infrastructure.Sqlite;
 using AgentPlatform.Infrastructure.Sqlite.Data;
 using AgentPlatform.Infrastructure.Sqlite.Runtime;
 using AgentPlatform.Infrastructure.Sqlite.Stores;
+using AgentPlatform.Infrastructure.Sqlite.Tools;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Agents.AI.Compaction;
 using Microsoft.EntityFrameworkCore;
@@ -185,6 +188,68 @@ public sealed class AgentPlatformTests
         });
 
         Assert.Contains("Unknown tool", ex.Message);
+    }
+
+    [Fact]
+    public async Task Tool_registry_catalog_includes_di_registered_tools()
+    {
+        await using var fixture = await TestFixture.CreateAsync();
+        await using var scope = fixture.Services.CreateAsyncScope();
+        var registry = scope.ServiceProvider.GetRequiredService<IAgentToolRegistry>();
+
+        var tools = registry.ListTools();
+
+        Assert.Contains(tools, tool => tool.Id == "clock" && tool.Category == "utility");
+        Assert.Contains(tools, tool => tool.Id == "calculator" && tool.Category == "utility");
+        Assert.Contains(tools, tool => tool.Id == "weather" && tool.Category == "demo");
+    }
+
+    [Fact]
+    public async Task Tool_registry_resolves_only_selected_tools_from_active_scope()
+    {
+        await using var fixture = await TestFixture.CreateAsync();
+        await using var scope = fixture.Services.CreateAsyncScope();
+        var registry = scope.ServiceProvider.GetRequiredService<IAgentToolRegistry>();
+
+        var tools = registry.ResolveTools(["clock", "calculator"], scope.ServiceProvider);
+
+        Assert.Equal(2, tools.Count);
+        Assert.Contains(tools, tool => tool.Name == "clock");
+        Assert.Contains(tools, tool => tool.Name == "calculator");
+        Assert.DoesNotContain(tools, tool => tool.Name == "weather");
+    }
+
+    [Fact]
+    public async Task Tool_can_use_injected_downstream_service()
+    {
+        await using var fixture = await TestFixture.CreateAsync();
+        await using var scope = fixture.Services.CreateAsyncScope();
+        var registry = scope.ServiceProvider.GetRequiredService<IAgentToolRegistry>();
+        var calculator = Assert.IsAssignableFrom<AIFunction>(registry.ResolveTools(["calculator"], scope.ServiceProvider).Single());
+
+        var result = await calculator.InvokeAsync(
+            new AIFunctionArguments(new Dictionary<string, object?> { ["expression"] = "2 + 3 * 4" }),
+            CancellationToken.None);
+
+        Assert.Equal("14", ConvertToolResult(result));
+    }
+
+    [Fact]
+    public async Task Tool_method_can_resolve_scoped_services_from_invocation_context()
+    {
+        await using var fixture = await TestFixture.CreateAsync();
+        await using var scope = fixture.Services.CreateAsyncScope();
+        var registry = scope.ServiceProvider.GetRequiredService<IAgentToolRegistry>();
+        var weather = Assert.IsAssignableFrom<AIFunction>(registry.ResolveTools(["weather"], scope.ServiceProvider).Single());
+
+        var result = await weather.InvokeAsync(
+            new AIFunctionArguments(new Dictionary<string, object?> { ["location"] = "Riyadh" })
+            {
+                Services = scope.ServiceProvider
+            },
+            CancellationToken.None);
+
+        Assert.Contains("Riyadh", ConvertToolResult(result));
     }
 
     [Fact]
@@ -531,6 +596,7 @@ public sealed class AgentPlatformTests
             services.AddSingleton<IPrebuiltAgentDefinition, GeneralAssistantAgent>();
             services.AddSingleton<IPrebuiltAgentDefinition, AgentBuilderAgent>();
             services.AddSingleton<IStaticCatalog, DefaultStaticCatalog>();
+            services.AddAgentPlatformBuiltinTools();
             services.AddAgentPlatformCore();
             services.AddSingleton<IAgentRuntime, FakeAgentRuntime>();
 
@@ -544,6 +610,16 @@ public sealed class AgentPlatformTests
             await Services.DisposeAsync();
             await _connection.DisposeAsync();
         }
+    }
+
+    private static string ConvertToolResult(object? result)
+    {
+        if (result is JsonElement element && element.ValueKind == JsonValueKind.String)
+        {
+            return element.GetString() ?? "";
+        }
+
+        return Convert.ToString(result, System.Globalization.CultureInfo.InvariantCulture) ?? "";
     }
 
     private sealed class FakeAgentRuntime : IAgentRuntime

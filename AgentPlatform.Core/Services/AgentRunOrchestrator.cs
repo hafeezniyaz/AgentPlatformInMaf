@@ -9,6 +9,7 @@ namespace AgentPlatform.Core.Services;
 public sealed class AgentRunOrchestrator(
     IAgentCatalogService catalogService,
     IStaticCatalog staticCatalog,
+    IAgentToolRegistry toolRegistry,
     IConversationStore conversationStore,
     IAgentRuntime runtime,
     IContextPolicyResolver contextPolicyResolver,
@@ -35,7 +36,7 @@ public sealed class AgentRunOrchestrator(
         var skillIds = NormalizeSkillSelection(request.SkillIds, agent.SkillIds, staticCatalog.Skills.Select(item => item.Id));
         toolIds = ExpandToolsForSkills(toolIds, skillIds, staticCatalog.Skills);
 
-        ValidateKnown("tool", toolIds, staticCatalog.Tools.Select(item => item.Id));
+        toolRegistry.ValidateKnown(toolIds);
         ValidateKnown("middleware", middlewareIds, staticCatalog.Middleware.Select(item => item.Id));
         ValidateKnown("skill", skillIds, staticCatalog.Skills.Select(item => item.Id));
         ValidateAllowed("tool", toolIds, agent.AllowedToolIds);

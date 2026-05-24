@@ -46,13 +46,6 @@ public sealed class AgentBuilderAgent : IPrebuiltAgentDefinition
 
 public sealed class DefaultStaticCatalog : IStaticCatalog
 {
-    public IReadOnlyList<CatalogItemDto> Tools { get; } =
-    [
-        new("clock", "Clock", "Returns the current UTC time.", "utility"),
-        new("calculator", "Calculator", "Evaluates simple arithmetic expressions.", "utility"),
-        new("weather", "Weather", "Returns a stub weather report for testing tool selection.", "demo")
-    ];
-
     public IReadOnlyList<CatalogItemDto> Middleware { get; } =
     [
         new("logging", "Logging", "Records run events to the configured backend log.", "observability"),

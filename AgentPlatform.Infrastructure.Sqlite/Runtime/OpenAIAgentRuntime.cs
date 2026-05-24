@@ -1,9 +1,8 @@
-using System.ComponentModel;
-using System.Data;
 using System.Text;
 using System.Text.Json;
 using AgentPlatform.Core.Models;
 using AgentPlatform.Core.Runtime;
+using AgentPlatform.Core.Services;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
@@ -19,7 +18,8 @@ public sealed class OpenAIAgentRuntime(
     ILoggerFactory loggerFactory,
     IServiceProvider serviceProvider,
     SqliteChatHistoryProvider chatHistoryProvider,
-    ContextCompactionProviderFactory compactionProviderFactory) : IAgentRuntime
+    ContextCompactionProviderFactory compactionProviderFactory,
+    IAgentToolRegistry toolRegistry) : IAgentRuntime
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
@@ -36,7 +36,7 @@ public sealed class OpenAIAgentRuntime(
         }
 
         var chatClient = CreateChatClient(run, apiKey);
-        var tools = BuildTools(run.ToolIds);
+        var tools = toolRegistry.ResolveTools(run.ToolIds, serviceProvider).ToList();
         var contextProviders = BuildSkillProviders(run.SkillIds);
 
         var agentOptions = new ChatClientAgentOptions
@@ -152,29 +152,6 @@ public sealed class OpenAIAgentRuntime(
             .BuildAIAgent(agentOptions, loggerFactory, serviceProvider);
     }
 
-    private IList<AITool> BuildTools(IReadOnlyList<string> toolIds)
-    {
-        var tools = new List<AITool>();
-
-        foreach (var toolId in toolIds)
-        {
-            switch (toolId)
-            {
-                case "clock":
-                    tools.Add(AIFunctionFactory.Create(GetCurrentUtcTime));
-                    break;
-                case "calculator":
-                    tools.Add(AIFunctionFactory.Create(Calculate));
-                    break;
-                case "weather":
-                    tools.Add(AIFunctionFactory.Create(GetWeather));
-                    break;
-            }
-        }
-
-        return tools;
-    }
-
     private IReadOnlyList<AIContextProvider> BuildSkillProviders(IReadOnlyList<string> skillIds)
     {
         if (skillIds.Count == 0)
@@ -198,31 +175,4 @@ public sealed class OpenAIAgentRuntime(
 
         return [provider];
     }
-
-    [Description("Get the current UTC timestamp in ISO-8601 format.")]
-    private static string GetCurrentUtcTime()
-        => DateTimeOffset.UtcNow.ToString("O");
-
-    [Description("Evaluate a simple arithmetic expression containing numbers, parentheses, and +, -, *, / operators.")]
-    private static string Calculate([Description("Arithmetic expression to evaluate.")] string expression)
-    {
-        if (expression.Any(character => !"0123456789.+-*/() ".Contains(character)))
-        {
-            return "Only simple arithmetic expressions are allowed.";
-        }
-
-        try
-        {
-            var result = new DataTable().Compute(expression, null);
-            return Convert.ToString(result, System.Globalization.CultureInfo.InvariantCulture) ?? "";
-        }
-        catch (Exception ex)
-        {
-            return $"Could not evaluate expression: {ex.Message}";
-        }
-    }
-
-    [Description("Get a demo weather report for a city. This is a local stub for development.")]
-    private static string GetWeather([Description("City or location name.")] string location)
-        => $"The weather in {location} is pleasant with light clouds. This is demo data.";
 }

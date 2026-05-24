@@ -1,4 +1,5 @@
 using AgentPlatform.Core.Models;
+using Microsoft.Extensions.AI;
 
 namespace AgentPlatform.Core.Services;
 
@@ -20,11 +21,33 @@ public interface IUserAgentStore
 
 public interface IStaticCatalog
 {
-    IReadOnlyList<CatalogItemDto> Tools { get; }
-
     IReadOnlyList<CatalogItemDto> Middleware { get; }
 
     IReadOnlyList<CatalogItemDto> Skills { get; }
+}
+
+public interface IAgentToolDefinition
+{
+    string Id { get; }
+
+    string Name { get; }
+
+    string Description { get; }
+
+    string Category { get; }
+
+    IReadOnlyDictionary<string, string>? Metadata { get; }
+
+    AITool CreateTool(IServiceProvider services);
+}
+
+public interface IAgentToolRegistry
+{
+    IReadOnlyList<CatalogItemDto> ListTools();
+
+    void ValidateKnown(IReadOnlyList<string> toolIds);
+
+    IReadOnlyList<AITool> ResolveTools(IReadOnlyList<string> toolIds, IServiceProvider services);
 }
 
 public interface IAgentCatalogService

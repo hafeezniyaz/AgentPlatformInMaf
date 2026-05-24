@@ -11,6 +11,7 @@ public static class DependencyInjection
         services.AddScoped<IContextPolicyResolver, ContextPolicyResolver>();
         services.AddScoped<IThinkingPolicyResolver, ThinkingPolicyResolver>();
         services.AddScoped<IModelCatalog, ModelCatalog>();
+        services.AddScoped<IAgentToolRegistry, AgentToolRegistry>();
         services.AddScoped<AgentRunOrchestrator>();
         return services;
     }
