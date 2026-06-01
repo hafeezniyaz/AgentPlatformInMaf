@@ -168,11 +168,20 @@ public sealed class OpenAIAgentRuntime(
         var selected = skillIds.ToHashSet(StringComparer.OrdinalIgnoreCase);
 #pragma warning disable MAAI001
         var provider = new AgentSkillsProviderBuilder()
-            .UseFileSkill(skillsPath)
+            .UseFileSkill(skillsPath, options: CreateFileSkillOptions())
             .UseFilter(skill => selected.Contains(skill.Frontmatter.Name))
             .Build();
 #pragma warning restore MAAI001
 
         return [provider];
     }
+
+#pragma warning disable MAAI001
+    private static AgentFileSkillsSourceOptions CreateFileSkillOptions()
+        => new()
+        {
+            AllowedScriptExtensions = [],
+            ScriptDirectories = []
+        };
+#pragma warning restore MAAI001
 }

@@ -1,4 +1,5 @@
 using AgentPlatform.Core.Models;
+using AgentPlatform.Core.Runtime;
 using AgentPlatform.Core.Services;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -53,19 +54,6 @@ public sealed class DefaultStaticCatalog : IStaticCatalog
         new("timing", "Timing", "Measures runtime duration and emits completion metadata.", "observability"),
         new("safety", "Safety", "Adds a safety instruction layer to the selected agent.", "policy")
     ];
-
-    public IReadOnlyList<CatalogItemDto> Skills { get; } =
-    [
-        new(
-            "agent-design",
-            "Agent Design",
-            "Guides an agent through designing focused agent roles, tool choices, middleware, and success criteria.",
-            "authoring",
-            new Dictionary<string, string>
-            {
-                ["requiredTools"] = "clock"
-            })
-    ];
 }
 
 public static class AgentsDependencyInjection
@@ -81,6 +69,17 @@ public static class AgentsDependencyInjection
         foreach (var agentType in agentTypes)
         {
             services.AddSingleton(typeof(IPrebuiltAgentDefinition), agentType);
+        }
+
+        var logicTypes = typeof(AgentsDependencyInjection).Assembly.GetTypes()
+            .Where(type =>
+                !type.IsAbstract &&
+                !type.IsInterface &&
+                typeof(ICodeAgentLogic).IsAssignableFrom(type));
+
+        foreach (var logicType in logicTypes)
+        {
+            services.AddScoped(typeof(ICodeAgentLogic), logicType);
         }
 
         services.TryAddSingleton<IStaticCatalog, DefaultStaticCatalog>();

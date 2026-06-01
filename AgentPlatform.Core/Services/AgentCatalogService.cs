@@ -8,6 +8,7 @@ public sealed class AgentCatalogService(
     IEnumerable<IPrebuiltAgentDefinition> prebuiltAgents,
     IUserAgentStore userAgentStore,
     IStaticCatalog staticCatalog,
+    IAgentSkillCatalog skillCatalog,
     IAgentToolRegistry toolRegistry,
     IOptions<AgentPlatformOptions> options,
     IOptions<PrebuiltAgentCatalogOptions> prebuiltAgentOptions,
@@ -24,12 +25,13 @@ public sealed class AgentCatalogService(
             .Concat(await userAgentStore.ListAsync(cancellationToken))
             .OrderBy(agent => agent.Name)
             .ToList();
+        var skills = await skillCatalog.ListSkillsAsync(cancellationToken);
 
         return new CatalogResponse(
             agents,
             toolRegistry.ListTools(),
             staticCatalog.Middleware,
-            staticCatalog.Skills,
+            skills,
             contextPolicyResolver.GetCapabilities(),
             thinkingPolicyResolver.GetCapabilities(),
             modelCatalog.ListModels());

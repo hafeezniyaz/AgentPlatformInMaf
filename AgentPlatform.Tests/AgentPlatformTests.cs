@@ -37,7 +37,9 @@ public sealed class AgentPlatformTests
         Assert.Contains(result.Agents, agent => agent.Id == "general-assistant" && agent.Source == "code");
         Assert.Contains(result.Agents, agent => agent.Id == created.Id && agent.Source == "user");
         Assert.Contains(result.Tools, tool => tool.Id == "clock");
-        Assert.Contains(result.Skills, skill => skill.Id == "agent-design");
+        var skill = Assert.Single(result.Skills, skill => skill.Id == "agent-design");
+        Assert.Equal("Agent Design", skill.Name);
+        Assert.Equal("clock", skill.Metadata?["allowedTools"]);
         Assert.Contains("inFlight", result.Context.SupportedModes);
         Assert.Contains("balanced", result.Context.SupportedProfiles);
         Assert.Equal("inFlight", result.Context.DefaultPolicy.Mode);
@@ -665,7 +667,7 @@ public sealed class AgentPlatformTests
     }
 
     [Fact]
-    public async Task Selected_skills_inject_required_tools_into_session_configuration()
+    public async Task Selected_skills_do_not_inject_allowed_tools_into_session_configuration()
     {
         await using var fixture = await TestFixture.CreateAsync();
         var orchestrator = fixture.Services.GetRequiredService<AgentRunOrchestrator>();
@@ -673,7 +675,7 @@ public sealed class AgentPlatformTests
 
         string? sessionId = null;
         await foreach (var streamEvent in orchestrator.StreamAsync(
-            new StreamRunRequest(null, "general-assistant", [], [], ["agent-design"], "Design an agent", null),
+            new StreamRunRequest(null, "general-assistant", ["weather"], [], ["agent-design"], "Design an agent", null),
             CancellationToken.None))
         {
             sessionId ??= streamEvent.SessionId;
@@ -682,7 +684,7 @@ public sealed class AgentPlatformTests
         var session = await store.GetSessionAsync(sessionId!, CancellationToken.None);
 
         Assert.NotNull(session);
-        Assert.Contains("clock", session.ToolIds);
+        Assert.Equal(["weather"], session.ToolIds);
         Assert.Equal(["agent-design"], session.SkillIds);
     }
 
@@ -695,7 +697,7 @@ public sealed class AgentPlatformTests
 
         string? sessionId = null;
         await foreach (var streamEvent in orchestrator.StreamAsync(
-            new StreamRunRequest(null, "general-assistant", [], [], ["*"], "Use any relevant skill", null),
+            new StreamRunRequest(null, "general-assistant", ["weather"], [], ["*"], "Use any relevant skill", null),
             CancellationToken.None))
         {
             sessionId ??= streamEvent.SessionId;
@@ -705,7 +707,7 @@ public sealed class AgentPlatformTests
 
         Assert.NotNull(session);
         Assert.Contains("agent-design", session.SkillIds);
-        Assert.Contains("clock", session.ToolIds);
+        Assert.Equal(["weather"], session.ToolIds);
     }
 
     [Fact]
@@ -776,9 +778,9 @@ public sealed class AgentPlatformTests
         Assert.NotNull(session);
         Assert.NotNull(continuedRun);
         Assert.Equal(["agent-design"], session.SkillIds);
-        Assert.Equal(["clock", "weather"], session.ToolIds.Order(StringComparer.OrdinalIgnoreCase));
+        Assert.Equal(["weather"], session.ToolIds);
         Assert.Equal(["logging"], continuedRun.MiddlewareIds);
-        Assert.Equal(["clock", "weather"], continuedRun.ToolIds.Order(StringComparer.OrdinalIgnoreCase));
+        Assert.Equal(["weather"], continuedRun.ToolIds);
         Assert.DoesNotContain("calculator", continuedRun.ToolIds);
     }
 
@@ -814,8 +816,104 @@ public sealed class AgentPlatformTests
         Assert.NotNull(continuedRun);
         Assert.Equal("alternate-model", stored.Model.Id);
         Assert.Equal(["agent-design"], stored.SkillIds);
-        Assert.Equal(["clock", "weather"], stored.ToolIds.Order(StringComparer.OrdinalIgnoreCase));
-        Assert.Equal(["clock", "weather"], continuedRun.ToolIds.Order(StringComparer.OrdinalIgnoreCase));
+        Assert.Equal(["weather"], stored.ToolIds);
+        Assert.Equal(["weather"], continuedRun.ToolIds);
+    }
+
+    [Fact]
+    public async Task Code_agent_logic_routes_message_treatments_and_persists_state()
+    {
+        await using var fixture = await TestFixture.CreateAsync(configureServices: services =>
+        {
+            services.AddSingleton<IPrebuiltAgentDefinition>(new TestPrebuiltAgent("logic-agent"));
+            services.AddScoped<ICodeAgentLogic, TestCodeAgentLogic>();
+        });
+        var orchestrator = fixture.Services.GetRequiredService<AgentRunOrchestrator>();
+        var store = fixture.Services.GetRequiredService<IConversationStore>();
+
+        var firstEvents = new List<RunStreamEvent>();
+        await foreach (var streamEvent in orchestrator.StreamAsync(
+            new StreamRunRequest(null, "logic-agent", [], [], [], "First logic request", null),
+            CancellationToken.None))
+        {
+            firstEvents.Add(streamEvent);
+        }
+
+        var sessionId = Assert.Single(firstEvents, item => item.Event == "run.started").SessionId;
+        var progressEvents = firstEvents.Where(item => item.Event == "agent.progress").ToList();
+        Assert.Equal(2, progressEvents.Count);
+        Assert.Contains(progressEvents, item => Assert.IsType<LogicProgressPayload>(item.Data).Message == "sink-progress");
+        Assert.Contains(progressEvents, item => Assert.IsType<LogicProgressPayload>(item.Data).Message == "direct-progress");
+        Assert.Contains(firstEvents, item => item.Event == "text.delta" && Assert.IsType<TextDeltaPayload>(item.Data).Text.Contains("without state"));
+        Assert.DoesNotContain(firstEvents, item => item.Event == "conversation.append");
+        Assert.DoesNotContain(firstEvents, item => item.Event == "agent.state.update");
+
+        var firstSession = await store.GetSessionAsync(sessionId, CancellationToken.None);
+        var firstStored = await store.GetStoredSessionAsync(sessionId, CancellationToken.None);
+
+        Assert.NotNull(firstSession);
+        Assert.NotNull(firstStored);
+        Assert.Contains(firstSession.Messages, message => message.Content == "Durable note from logic.");
+        Assert.Contains(firstSession.Messages, message => message.Content == "Logic answer without state.");
+        Assert.DoesNotContain(firstSession.Messages, message => message.Content.Contains("progress", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal("""{"logic":"ok"}""", firstStored.SerializedSessionState);
+        using (var state = JsonDocument.Parse(firstStored.AgentStateJson))
+        {
+            Assert.True(state.RootElement.TryGetProperty("turnMessageCount", out var count));
+            Assert.Equal(0, count.GetInt32());
+        }
+
+        var secondEvents = new List<RunStreamEvent>();
+        await foreach (var streamEvent in orchestrator.StreamAsync(
+            new StreamRunRequest(sessionId, "logic-agent", [], [], [], "Second logic request", null),
+            CancellationToken.None))
+        {
+            secondEvents.Add(streamEvent);
+        }
+
+        var secondProgress = secondEvents
+            .Where(item => item.Event == "agent.progress")
+            .Select(item => Assert.IsType<LogicProgressPayload>(item.Data))
+            .ToList();
+
+        Assert.NotEmpty(secondProgress);
+        Assert.All(secondProgress, payload => Assert.True(payload.HadState));
+        Assert.All(secondProgress, payload => Assert.True(payload.RecentMessages >= 3));
+        Assert.Contains(secondEvents, item => item.Event == "text.delta" && Assert.IsType<TextDeltaPayload>(item.Data).Text.Contains("with state"));
+    }
+
+    [Fact]
+    public async Task User_agent_with_matching_logic_id_uses_default_runtime()
+    {
+        await using var fixture = await TestFixture.CreateAsync(configureServices: services =>
+        {
+            services.AddScoped<ICodeAgentLogic, TestCodeAgentLogic>();
+        });
+        var catalog = fixture.Services.GetRequiredService<IAgentCatalogService>();
+        var orchestrator = fixture.Services.GetRequiredService<AgentRunOrchestrator>();
+
+        var userAgent = await catalog.CreateAgentAsync(
+            new CreateAgentRequest(
+                "Logic Agent",
+                "User agent with the same id as test logic.",
+                "Answer normally.",
+                null,
+                [],
+                [],
+                []),
+            CancellationToken.None);
+
+        var events = new List<RunStreamEvent>();
+        await foreach (var streamEvent in orchestrator.StreamAsync(
+            new StreamRunRequest(null, userAgent.Id, [], [], [], "Hello user agent", null),
+            CancellationToken.None))
+        {
+            events.Add(streamEvent);
+        }
+
+        Assert.Equal("logic-agent", userAgent.Id);
+        Assert.Contains(events, item => item.Event == "text.delta" && Assert.IsType<TextDeltaPayload>(item.Data).Text == "Echo: Hello user agent");
+        Assert.DoesNotContain(events, item => item.Event == "agent.progress");
     }
 
     private sealed class TestFixture : IAsyncDisposable
@@ -843,7 +941,7 @@ public sealed class AgentPlatformTests
             services.Configure<AgentPlatformOptions>(options =>
             {
                 options.DefaultModel = "test-model";
-                options.SkillsPath = "skills";
+                options.SkillsPath = FindSkillsPath();
             });
             if (configurePrebuiltAgents is not null)
             {
@@ -857,6 +955,7 @@ public sealed class AgentPlatformTests
             services.AddPrebuiltAgentCatalog();
             services.AddAgentPlatformBuiltinTools();
             services.AddAgentPlatformCore();
+            services.AddScoped<IAgentSkillCatalog, FileAgentSkillCatalog>();
             services.AddSingleton<IAgentRuntime, FakeAgentRuntime>();
             configureServices?.Invoke(services);
 
@@ -872,6 +971,23 @@ public sealed class AgentPlatformTests
         }
     }
 
+    private static string FindSkillsPath()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null)
+        {
+            var candidate = Path.Combine(directory.FullName, "skills");
+            if (Directory.Exists(candidate))
+            {
+                return candidate;
+            }
+
+            directory = directory.Parent;
+        }
+
+        return Path.GetFullPath("skills");
+    }
+
     private static string ConvertToolResult(object? result)
     {
         if (result is JsonElement element && element.ValueKind == JsonValueKind.String)
@@ -880,6 +996,59 @@ public sealed class AgentPlatformTests
         }
 
         return Convert.ToString(result, System.Globalization.CultureInfo.InvariantCulture) ?? "";
+    }
+
+    private sealed record LogicProgressPayload(string Message, int RecentMessages, bool HadState);
+
+    private sealed class TestCodeAgentLogic(IAgentRunEventSink eventSink) : ICodeAgentLogic
+    {
+        public string AgentId => "logic-agent";
+
+        public async IAsyncEnumerable<AgentLogicEvent> StreamAsync(
+            AgentLogicContext context,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            await eventSink.EmitAsync(
+                new AgentLogicEvent(
+                    "agent.progress",
+                    new LogicProgressPayload("sink-progress", context.RecentMessages.Count, context.AgentState.ContainsKey("turnMessageCount")),
+                    AgentMessageTreatment.VisibleProgress),
+                cancellationToken);
+
+            yield return new AgentLogicEvent(
+                "agent.progress",
+                new LogicProgressPayload("direct-progress", context.RecentMessages.Count, context.AgentState.ContainsKey("turnMessageCount")),
+                AgentMessageTreatment.VisibleProgress);
+
+            yield return new AgentLogicEvent(
+                "conversation.append",
+                new ConversationAppendRequest("assistant", "Durable note from logic."),
+                AgentMessageTreatment.ConversationAppend,
+                ExposeToClient: false);
+
+            yield return new AgentLogicEvent(
+                "agent.state.update",
+                new AgentStateUpdate(new Dictionary<string, JsonElement>
+                {
+                    ["turnMessageCount"] = JsonSerializer.SerializeToElement(context.RecentMessages.Count),
+                    ["hadState"] = JsonSerializer.SerializeToElement(context.AgentState.ContainsKey("turnMessageCount"))
+                }),
+                AgentMessageTreatment.StateUpdate,
+                ExposeToClient: false);
+
+            var answer = context.AgentState.ContainsKey("turnMessageCount")
+                ? "Logic answer with state."
+                : "Logic answer without state.";
+            yield return new AgentLogicEvent(
+                "text.delta",
+                new TextDeltaPayload(answer),
+                AgentMessageTreatment.FinalAnswerDelta);
+            yield return new AgentLogicEvent(
+                "run.completed",
+                new RunCompletedPayload(""),
+                AgentMessageTreatment.RunEvent,
+                SerializedRuntimeSessionState: """{"logic":"ok"}""");
+        }
     }
 
     private sealed class FakeAgentRuntime : IAgentRuntime

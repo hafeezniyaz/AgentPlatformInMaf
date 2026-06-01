@@ -34,6 +34,7 @@ public static class AgentPlatformSchemaInitializer
         await AddColumnIfMissingAsync(dbContext, "ChatSessions", "ModelBaseUrl", "TEXT NULL", cancellationToken);
         await AddColumnIfMissingAsync(dbContext, "ChatSessions", "ModelCompatibilityGroup", "TEXT NOT NULL DEFAULT ''", cancellationToken);
         await AddColumnIfMissingAsync(dbContext, "ChatSessions", "ModelContextWindowTokens", "INTEGER NULL", cancellationToken);
+        await AddColumnIfMissingAsync(dbContext, "ChatSessions", "AgentStateJson", "TEXT NOT NULL DEFAULT '{}'", cancellationToken);
         await CreateReasoningTracesTableAsync(dbContext, cancellationToken);
     }
 

@@ -25,6 +25,7 @@ public static class DependencyInjection
         services.AddScoped<IReasoningTraceStore, SqliteReasoningTraceStore>();
         services.AddScoped<ContextCompactionProviderFactory>();
         services.AddScoped<SqliteChatHistoryProvider>();
+        services.AddScoped<IAgentSkillCatalog, FileAgentSkillCatalog>();
         services.AddScoped<IAgentRuntime, OpenAIAgentRuntime>();
         services.AddAgentPlatformBuiltinTools();
         services.Configure<AgentPlatformOptions>(agentOptions =>

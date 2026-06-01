@@ -300,24 +300,24 @@ Goal: expose plug-and-play capabilities the frontend can select.
 
 **Build**:
 
-- Add a skill catalog item.
+- Discover skill catalog items from the configured `skills` folder.
 - Add a local `SKILL.md` file.
-- Use skill metadata for dependencies.
+- Use standard Agent Skills frontmatter for metadata.
 
 **Checkpoint**: selected skills can be discovered by ID.
 
-### Chapter 4. Add Skill-Required Tools
+### Chapter 4. Keep Skill Tools Explicit
 
-**Problem**: Automatically include tools required by selected skills.
+**Problem**: Keep skill metadata separate from tool authorization.
 
-**Intuition**: Choosing a skill should bring its dependencies, just like installing a package.
+**Intuition**: A skill can document `allowed-tools`, but only the agent's selected and authorized tools should be callable.
 
 **Build**:
 
-- Read `requiredTools` metadata.
-- Expand selected tools before validation.
+- Read `allowed-tools` metadata for catalog display.
+- Do not expand selected tools from skill metadata.
 
-**Checkpoint**: selecting a skill injects its required tool IDs into the session configuration.
+**Checkpoint**: selecting a skill does not grant extra tool IDs.
 
 ## Module 6: Public API Surface
 

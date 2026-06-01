@@ -22,8 +22,11 @@ public interface IUserAgentStore
 public interface IStaticCatalog
 {
     IReadOnlyList<CatalogItemDto> Middleware { get; }
+}
 
-    IReadOnlyList<CatalogItemDto> Skills { get; }
+public interface IAgentSkillCatalog
+{
+    Task<IReadOnlyList<CatalogItemDto>> ListSkillsAsync(CancellationToken cancellationToken);
 }
 
 public interface IAgentToolDefinition
@@ -123,6 +126,8 @@ public interface IConversationStore
 
     Task AddRunEventAsync(string sessionId, string eventName, object payload, CancellationToken cancellationToken);
 
+    Task UpdateAgentStateAsync(string sessionId, string agentStateJson, CancellationToken cancellationToken);
+
     Task UpdateSessionConfigurationAsync(
         string sessionId,
         string configHash,
@@ -171,4 +176,5 @@ public sealed record StoredSession(
     string ThinkingCapture,
     int ReasoningTraceCount,
     int LastReasoningTokenEstimate,
-    ResolvedModel Model);
+    ResolvedModel Model,
+    string AgentStateJson = "{}");

@@ -31,6 +31,7 @@ public sealed class AgentPlatformDbContext(DbContextOptions<AgentPlatformDbConte
             entity.Property(session => session.SessionId).HasMaxLength(64);
             entity.Property(session => session.AgentId).HasMaxLength(128);
             entity.Property(session => session.ConfigHash).HasMaxLength(128);
+            entity.Property(session => session.AgentStateJson).HasDefaultValue("{}");
             entity.Property(session => session.ContextMode).HasMaxLength(40);
             entity.Property(session => session.ContextProfile).HasMaxLength(40);
             entity.Property(session => session.ThinkingMode).HasMaxLength(40);

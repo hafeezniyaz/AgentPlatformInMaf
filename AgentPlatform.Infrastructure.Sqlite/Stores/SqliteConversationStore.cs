@@ -153,7 +153,8 @@ public sealed class SqliteConversationStore(AgentPlatformDbContext dbContext) : 
                 session.ThinkingCapture,
                 session.ReasoningTraceCount,
                 session.LastReasoningTokenEstimate,
-                ReadResolvedModel(session));
+                ReadResolvedModel(session),
+                string.IsNullOrWhiteSpace(session.AgentStateJson) ? "{}" : session.AgentStateJson);
     }
 
     public async Task<StoredSession> CreateSessionAsync(
@@ -193,6 +194,7 @@ public sealed class SqliteConversationStore(AgentPlatformDbContext dbContext) : 
             ModelBaseUrl = model.BaseUrl,
             ModelCompatibilityGroup = model.CompatibilityGroup,
             ModelContextWindowTokens = model.ContextWindowTokens,
+            AgentStateJson = "{}",
             CreatedAt = now,
             UpdatedAt = now
         };
@@ -219,7 +221,8 @@ public sealed class SqliteConversationStore(AgentPlatformDbContext dbContext) : 
             thinkingPolicy.Capture ?? "opaque",
             0,
             0,
-            model);
+            model,
+            "{}");
     }
 
     public async Task AddMessageAsync(string sessionId, string role, string content, CancellationToken cancellationToken)
@@ -254,6 +257,14 @@ public sealed class SqliteConversationStore(AgentPlatformDbContext dbContext) : 
             CreatedAt = DateTimeOffset.UtcNow
         });
 
+        await dbContext.SaveChangesAsync(cancellationToken);
+    }
+
+    public async Task UpdateAgentStateAsync(string sessionId, string agentStateJson, CancellationToken cancellationToken)
+    {
+        var session = await dbContext.ChatSessions.FirstAsync(item => item.SessionId == sessionId, cancellationToken);
+        session.AgentStateJson = string.IsNullOrWhiteSpace(agentStateJson) ? "{}" : agentStateJson;
+        session.UpdatedAt = DateTimeOffset.UtcNow;
         await dbContext.SaveChangesAsync(cancellationToken);
     }
 

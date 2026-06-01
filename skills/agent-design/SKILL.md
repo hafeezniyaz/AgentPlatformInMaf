@@ -5,7 +5,7 @@ license: MIT
 metadata:
   author: local
   version: "1.0"
-  required-tools: clock
+allowed-tools: clock
 ---
 
 # Agent Design

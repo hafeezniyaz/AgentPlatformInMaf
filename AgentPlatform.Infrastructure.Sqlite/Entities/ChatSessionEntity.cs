@@ -22,6 +22,8 @@ public sealed class ChatSessionEntity
 
     public string? SerializedSessionState { get; set; }
 
+    public string AgentStateJson { get; set; } = "{}";
+
     public string ContextPolicyJson { get; set; } = "{}";
 
     public string ContextMode { get; set; } = "inFlight";

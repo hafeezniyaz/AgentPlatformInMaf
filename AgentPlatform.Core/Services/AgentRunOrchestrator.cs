@@ -9,9 +9,10 @@ namespace AgentPlatform.Core.Services;
 public sealed class AgentRunOrchestrator(
     IAgentCatalogService catalogService,
     IStaticCatalog staticCatalog,
+    IAgentSkillCatalog skillCatalog,
     IAgentToolRegistry toolRegistry,
     IConversationStore conversationStore,
-    IAgentRuntime runtime,
+    IAgentLogicDispatcher logicDispatcher,
     IContextPolicyResolver contextPolicyResolver,
     IThinkingPolicyResolver thinkingPolicyResolver,
     IModelCatalog modelCatalog,
@@ -33,14 +34,14 @@ public sealed class AgentRunOrchestrator(
 
         var sessionId = string.IsNullOrWhiteSpace(request.SessionId) ? Guid.NewGuid().ToString("n") : request.SessionId!;
         var storedSession = await conversationStore.GetStoredSessionAsync(sessionId, cancellationToken);
+        var skills = await skillCatalog.ListSkillsAsync(cancellationToken);
         var toolIds = NormalizeSelection(request.ToolIds, storedSession?.ToolIds ?? agent.ToolIds);
         var middlewareIds = NormalizeSelection(request.MiddlewareIds, storedSession?.MiddlewareIds ?? agent.MiddlewareIds);
-        var skillIds = NormalizeSkillSelection(request.SkillIds, storedSession?.SkillIds ?? agent.SkillIds, staticCatalog.Skills.Select(item => item.Id));
-        toolIds = ExpandToolsForSkills(toolIds, skillIds, staticCatalog.Skills);
+        var skillIds = NormalizeSkillSelection(request.SkillIds, storedSession?.SkillIds ?? agent.SkillIds, skills.Select(item => item.Id));
 
         toolRegistry.ValidateKnown(toolIds);
         ValidateKnown("middleware", middlewareIds, staticCatalog.Middleware.Select(item => item.Id));
-        ValidateKnown("skill", skillIds, staticCatalog.Skills.Select(item => item.Id));
+        ValidateKnown("skill", skillIds, skills.Select(item => item.Id));
         ValidateAllowed("tool", toolIds, agent.AllowedToolIds);
         ValidateAllowed("middleware", middlewareIds, agent.AllowedMiddlewareIds);
         ValidateAllowed("skill", skillIds, agent.AllowedSkillIds);
@@ -107,9 +108,6 @@ public sealed class AgentRunOrchestrator(
             resolvedModel,
             request.Message,
             configHash);
-        var assistantMessage = new StringBuilder();
-        var reasoningMessage = new StringBuilder();
-
         var started = new RunStreamEvent(
             "run.started",
             sessionId,
@@ -119,29 +117,127 @@ public sealed class AgentRunOrchestrator(
         yield return started;
 
         string? serializedSessionState = modelChanged ? null : storedSession.SerializedSessionState;
+        var recentMessages = await conversationStore.GetMessagesAsync(sessionId, 50, 0, cancellationToken);
+        var initialAgentState = DeserializeAgentState(storedSession.AgentStateJson)
+            .ToDictionary(item => item.Key, item => CloneElement(item.Value), StringComparer.OrdinalIgnoreCase);
+        var agentState = initialAgentState
+            .ToDictionary(item => item.Key, item => CloneElement(item.Value), StringComparer.OrdinalIgnoreCase);
+        var stateChanged = false;
+        var logicContext = new AgentLogicContext(
+            runSpec,
+            storedSession,
+            recentMessages?.Items ?? [],
+            initialAgentState,
+            serializedSessionState);
+        var assistantMessage = new StringBuilder();
+        var reasoningMessage = new StringBuilder();
 
-        await foreach (var runtimeEvent in runtime.StreamAsync(runSpec, serializedSessionState, cancellationToken))
+        await foreach (var logicEvent in logicDispatcher.StreamAsync(logicContext, cancellationToken))
         {
-            if (runtimeEvent.Event == "text.delta" && runtimeEvent.Data is TextDeltaPayload delta)
+            if (!string.IsNullOrWhiteSpace(logicEvent.SerializedRuntimeSessionState))
             {
-                assistantMessage.Append(delta.Text);
+                serializedSessionState = logicEvent.SerializedRuntimeSessionState;
             }
 
-            if (runtimeEvent.Event == "reasoning.delta" && runtimeEvent.Data is ReasoningDeltaPayload reasoning)
+            switch (logicEvent.Treatment)
             {
-                reasoningMessage.Append(reasoning.Text);
-            }
+                case AgentMessageTreatment.FinalAnswerDelta:
+                {
+                    if (logicEvent.Data is TextDeltaPayload delta)
+                    {
+                        assistantMessage.Append(delta.Text);
+                    }
 
-            if (!string.IsNullOrWhiteSpace(runtimeEvent.SerializedSessionState))
-            {
-                serializedSessionState = runtimeEvent.SerializedSessionState;
-            }
+                    if (logicEvent.ExposeToClient)
+                    {
+                        var outgoing = ToRunStreamEvent(logicEvent, sessionId);
+                        await conversationStore.AddRunEventAsync(sessionId, outgoing.Event, outgoing.Data, cancellationToken);
+                        yield return outgoing;
+                    }
 
-            var outgoing = new RunStreamEvent(runtimeEvent.Event, sessionId, runtimeEvent.Data, DateTimeOffset.UtcNow);
-            if (runtimeEvent.ExposeToClient)
-            {
-                await conversationStore.AddRunEventAsync(sessionId, outgoing.Event, outgoing.Data, cancellationToken);
-                yield return outgoing;
+                    break;
+                }
+
+                case AgentMessageTreatment.VisibleProgress:
+                {
+                    var outgoing = ToRunStreamEvent(logicEvent, sessionId);
+                    await conversationStore.AddRunEventAsync(sessionId, outgoing.Event, outgoing.Data, cancellationToken);
+                    if (logicEvent.ExposeToClient)
+                    {
+                        yield return outgoing;
+                    }
+
+                    break;
+                }
+
+                case AgentMessageTreatment.ConversationAppend:
+                {
+                    if (logicEvent.Data is not ConversationAppendRequest append)
+                    {
+                        throw new AgentPlatformValidationException("conversation.append events require a ConversationAppendRequest payload.");
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(append.Content))
+                    {
+                        await conversationStore.AddMessageAsync(sessionId, append.Role, append.Content, cancellationToken);
+                    }
+
+                    if (logicEvent.ExposeToClient)
+                    {
+                        var outgoing = ToRunStreamEvent(logicEvent, sessionId);
+                        await conversationStore.AddRunEventAsync(sessionId, outgoing.Event, outgoing.Data, cancellationToken);
+                        yield return outgoing;
+                    }
+
+                    break;
+                }
+
+                case AgentMessageTreatment.StateUpdate:
+                {
+                    if (logicEvent.Data is not AgentStateUpdate update)
+                    {
+                        throw new AgentPlatformValidationException("agent.state.update events require an AgentStateUpdate payload.");
+                    }
+
+                    if (update.Replace)
+                    {
+                        agentState.Clear();
+                    }
+
+                    foreach (var (key, value) in update.Values)
+                    {
+                        if (!string.IsNullOrWhiteSpace(key))
+                        {
+                            agentState[key] = CloneElement(value);
+                        }
+                    }
+
+                    stateChanged = true;
+                    break;
+                }
+
+                case AgentMessageTreatment.RunEvent:
+                {
+                    if (logicEvent.Event == "reasoning.delta" && logicEvent.Data is ReasoningDeltaPayload reasoning)
+                    {
+                        reasoningMessage.Append(reasoning.Text);
+                    }
+
+                    if (logicEvent.ExposeToClient || !logicEvent.Event.StartsWith("reasoning.", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var outgoing = ToRunStreamEvent(logicEvent, sessionId);
+                        await conversationStore.AddRunEventAsync(sessionId, outgoing.Event, outgoing.Data, cancellationToken);
+                        if (logicEvent.ExposeToClient)
+                        {
+                            yield return outgoing;
+                        }
+                    }
+
+                    break;
+                }
+
+                case AgentMessageTreatment.Diagnostic:
+                    break;
             }
         }
 
@@ -177,6 +273,14 @@ public sealed class AgentRunOrchestrator(
             compactedPromptSnapshotJson: null,
             compactionStats: null,
             cancellationToken);
+
+        if (stateChanged)
+        {
+            await conversationStore.UpdateAgentStateAsync(
+                sessionId,
+                JsonSerializer.Serialize(agentState, JsonOptions),
+                cancellationToken);
+        }
     }
 
     private static IReadOnlyList<string> NormalizeSelection(IReadOnlyList<string>? requested, IReadOnlyList<string> defaults)
@@ -195,26 +299,6 @@ public sealed class AgentRunOrchestrator(
         return selected.Contains("*", StringComparer.OrdinalIgnoreCase)
             ? allSkillIds.Order(StringComparer.OrdinalIgnoreCase).ToList()
             : selected;
-    }
-
-    private static IReadOnlyList<string> ExpandToolsForSkills(
-        IReadOnlyList<string> selectedToolIds,
-        IReadOnlyList<string> selectedSkillIds,
-        IReadOnlyList<CatalogItemDto> skills)
-    {
-        var expanded = selectedToolIds.ToHashSet(StringComparer.OrdinalIgnoreCase);
-        foreach (var skill in skills.Where(skill => selectedSkillIds.Contains(skill.Id, StringComparer.OrdinalIgnoreCase)))
-        {
-            if (skill.Metadata?.TryGetValue("requiredTools", out var requiredTools) is true)
-            {
-                foreach (var toolId in requiredTools.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
-                {
-                    expanded.Add(toolId);
-                }
-            }
-        }
-
-        return expanded.Order(StringComparer.OrdinalIgnoreCase).ToList();
     }
 
     private static void ValidateKnown(string type, IReadOnlyList<string> selected, IEnumerable<string> known)
@@ -295,6 +379,30 @@ public sealed class AgentRunOrchestrator(
 
     private static int EstimateTokens(string text)
         => Math.Max(1, (int)Math.Ceiling(text.Length / 4.0));
+
+    private static RunStreamEvent ToRunStreamEvent(AgentLogicEvent logicEvent, string sessionId)
+        => new(logicEvent.Event, sessionId, logicEvent.Data, DateTimeOffset.UtcNow);
+
+    private static IReadOnlyDictionary<string, JsonElement> DeserializeAgentState(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(json, JsonOptions)
+                ?? new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
+        }
+        catch (JsonException)
+        {
+            return new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
+        }
+    }
+
+    private static JsonElement CloneElement(JsonElement element)
+        => element.Clone();
 
     private static bool CanSwitchModel(
         StoredSession storedSession,
