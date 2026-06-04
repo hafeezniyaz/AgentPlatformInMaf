@@ -9,7 +9,7 @@ using Microsoft.Extensions.AI;
 namespace AgentPlatform.Infrastructure.Sqlite.Runtime;
 
 public sealed class SqliteChatHistoryProvider(
-    AgentPlatformDbContext dbContext,
+    IAgentPlatformDbContext dbContext,
     ContextCompactionProviderFactory compactionProviderFactory) : ChatHistoryProvider
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);

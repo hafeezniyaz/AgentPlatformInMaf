@@ -5,6 +5,7 @@ using AgentPlatform.Core.Runtime;
 using AgentPlatform.Core.Services;
 using AgentPlatform.Infrastructure.Sqlite;
 using AgentPlatform.Infrastructure.Sqlite.Data;
+using AgentPlatform.Infrastructure.Sqlite.Entities;
 using AgentPlatform.Infrastructure.Sqlite.Runtime;
 using AgentPlatform.Infrastructure.Sqlite.Stores;
 using AgentPlatform.Infrastructure.Sqlite.Tools;
@@ -916,6 +917,82 @@ public sealed class AgentPlatformTests
         Assert.DoesNotContain(events, item => item.Event == "agent.progress");
     }
 
+    [Fact]
+    public async Task Existing_dbcontext_registration_uses_external_sqlite_context()
+    {
+        await using var connection = new SqliteConnection("DataSource=:memory:");
+        await connection.OpenAsync();
+
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddOptions();
+        services.AddSingleton<IConfiguration>(new ConfigurationBuilder().Build());
+        services.Configure<AgentPlatformOptions>(options =>
+        {
+            options.DefaultModel = "test-model";
+            options.SkillsPath = FindSkillsPath();
+        });
+        services.AddDbContext<TestAppDbContext>(options => options.UseSqlite(connection));
+        services.AddAgentPlatformCore();
+        services.AddAgentPlatformSqliteWithDbContext<TestAppDbContext>();
+
+        await using var provider = services.BuildServiceProvider();
+        await provider.GetRequiredService<TestAppDbContext>().Database.EnsureCreatedAsync();
+
+        using var scope = provider.CreateScope();
+        var scopedServices = scope.ServiceProvider;
+        var appDbContext = scopedServices.GetRequiredService<TestAppDbContext>();
+        var agentPlatformDbContext = scopedServices.GetRequiredService<IAgentPlatformDbContext>();
+
+        Assert.Same(appDbContext, agentPlatformDbContext);
+        Assert.NotNull(scopedServices.GetRequiredService<IUserAgentStore>());
+        Assert.NotNull(scopedServices.GetRequiredService<IConversationStore>());
+        Assert.NotNull(scopedServices.GetRequiredService<IReasoningTraceStore>());
+        Assert.NotNull(scopedServices.GetRequiredService<SqliteChatHistoryProvider>());
+        Assert.NotNull(scopedServices.GetRequiredService<IAgentRuntime>());
+        AssertHasSessionCascadeForeignKey<ChatMessageEntity>(appDbContext);
+        AssertHasSessionCascadeForeignKey<RunEventEntity>(appDbContext);
+        AssertHasSessionCascadeForeignKey<ReasoningTraceEntity>(appDbContext);
+        AssertHasUniqueIndex<ChatMessageEntity>(appDbContext, nameof(ChatMessageEntity.SessionId), nameof(ChatMessageEntity.Sequence));
+        AssertHasUniqueIndex<ReasoningTraceEntity>(appDbContext, nameof(ReasoningTraceEntity.SessionId), nameof(ReasoningTraceEntity.TurnSequence));
+
+        var userAgentStore = scopedServices.GetRequiredService<IUserAgentStore>();
+        var createdAgent = await userAgentStore.CreateAsync(
+            new CreateAgentRequest(
+                "External DB Agent",
+                "Uses the host app database",
+                "Answer from the host app context.",
+                null,
+                [],
+                [],
+                []),
+            "test-model",
+            CancellationToken.None);
+
+        Assert.Equal(1, await appDbContext.UserAgents.CountAsync(CancellationToken.None));
+        Assert.Equal(createdAgent.Id, await appDbContext.UserAgents.Select(agent => agent.Id).SingleAsync(CancellationToken.None));
+
+        var conversationStore = scopedServices.GetRequiredService<IConversationStore>();
+        var storedSession = await conversationStore.CreateSessionAsync(
+            "external-session",
+            createdAgent.Id,
+            createdAgent.Name,
+            "External session",
+            "hash",
+            [],
+            [],
+            [],
+            new ContextPolicyDto { Enabled = true, Mode = "inFlight", Profile = "balanced", SummarizerModel = "test-model" },
+            new ThinkingPolicyDto { Enabled = false, Mode = "disabled", Capture = "opaque", ExposeToClient = false, MaxPreservedTokens = 24000 },
+            new ResolvedModel("test-model", "openai", null, "test-model", null, null),
+            CancellationToken.None);
+
+        await conversationStore.AddMessageAsync(storedSession.SessionId, "user", "Hello from the existing app database.", CancellationToken.None);
+
+        Assert.Equal(1, await appDbContext.ChatSessions.CountAsync(CancellationToken.None));
+        Assert.Equal(1, await appDbContext.ChatMessages.CountAsync(CancellationToken.None));
+    }
+
     private sealed class TestFixture : IAsyncDisposable
     {
         private readonly SqliteConnection _connection;
@@ -949,6 +1026,7 @@ public sealed class AgentPlatformTests
             }
 
             services.AddDbContext<AgentPlatformDbContext>(options => options.UseSqlite(connection));
+            services.AddScoped<IAgentPlatformDbContext>(provider => provider.GetRequiredService<AgentPlatformDbContext>());
             services.AddScoped<IUserAgentStore, SqliteUserAgentStore>();
             services.AddScoped<IConversationStore, SqliteConversationStore>();
             services.AddScoped<IReasoningTraceStore, SqliteReasoningTraceStore>();
@@ -971,6 +1049,24 @@ public sealed class AgentPlatformTests
         }
     }
 
+    private sealed class TestAppDbContext(DbContextOptions<TestAppDbContext> options) :
+        DbContext(options),
+        IAgentPlatformDbContext
+    {
+        public DbSet<UserAgentEntity> UserAgents => Set<UserAgentEntity>();
+
+        public DbSet<ChatSessionEntity> ChatSessions => Set<ChatSessionEntity>();
+
+        public DbSet<ChatMessageEntity> ChatMessages => Set<ChatMessageEntity>();
+
+        public DbSet<RunEventEntity> RunEvents => Set<RunEventEntity>();
+
+        public DbSet<ReasoningTraceEntity> ReasoningTraces => Set<ReasoningTraceEntity>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+            => modelBuilder.ApplyAgentPlatformModel();
+    }
+
     private static string FindSkillsPath()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
@@ -986,6 +1082,24 @@ public sealed class AgentPlatformTests
         }
 
         return Path.GetFullPath("skills");
+    }
+
+    private static void AssertHasSessionCascadeForeignKey<TEntity>(DbContext dbContext)
+    {
+        var entityType = dbContext.Model.FindEntityType(typeof(TEntity));
+        Assert.NotNull(entityType);
+        Assert.Contains(entityType!.GetForeignKeys(), foreignKey =>
+            foreignKey.PrincipalEntityType.ClrType == typeof(ChatSessionEntity) &&
+            foreignKey.DeleteBehavior == DeleteBehavior.Cascade);
+    }
+
+    private static void AssertHasUniqueIndex<TEntity>(DbContext dbContext, params string[] propertyNames)
+    {
+        var entityType = dbContext.Model.FindEntityType(typeof(TEntity));
+        Assert.NotNull(entityType);
+        Assert.Contains(entityType!.GetIndexes(), index =>
+            index.IsUnique &&
+            index.Properties.Select(property => property.Name).SequenceEqual(propertyNames));
     }
 
     private static string ConvertToolResult(object? result)

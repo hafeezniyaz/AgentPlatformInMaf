@@ -7,7 +7,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace AgentPlatform.Infrastructure.Sqlite.Stores;
 
-public sealed class SqliteConversationStore(AgentPlatformDbContext dbContext) : IConversationStore
+public sealed class SqliteConversationStore(IAgentPlatformDbContext dbContext) : IConversationStore
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 

@@ -8,7 +8,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace AgentPlatform.Infrastructure.Sqlite.Stores;
 
-public sealed partial class SqliteUserAgentStore(AgentPlatformDbContext dbContext) : IUserAgentStore
+public sealed partial class SqliteUserAgentStore(IAgentPlatformDbContext dbContext) : IUserAgentStore
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 

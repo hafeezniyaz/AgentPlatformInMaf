@@ -20,14 +20,8 @@ public static class DependencyInjection
             ?? "Data Source=agent-platform.db";
 
         services.AddDbContext<AgentPlatformDbContext>(options => options.UseSqlite(connectionString));
-        services.AddScoped<IUserAgentStore, SqliteUserAgentStore>();
-        services.AddScoped<IConversationStore, SqliteConversationStore>();
-        services.AddScoped<IReasoningTraceStore, SqliteReasoningTraceStore>();
-        services.AddScoped<ContextCompactionProviderFactory>();
-        services.AddScoped<SqliteChatHistoryProvider>();
-        services.AddScoped<IAgentSkillCatalog, FileAgentSkillCatalog>();
-        services.AddScoped<IAgentRuntime, OpenAIAgentRuntime>();
-        services.AddAgentPlatformBuiltinTools();
+        services.AddScoped<IAgentPlatformDbContext>(provider => provider.GetRequiredService<AgentPlatformDbContext>());
+        services.AddAgentPlatformSqliteServices();
         services.Configure<AgentPlatformOptions>(agentOptions =>
         {
             var section = configuration.GetSection("AgentPlatform");
@@ -79,6 +73,14 @@ public static class DependencyInjection
         return services;
     }
 
+    public static IServiceCollection AddAgentPlatformSqliteWithDbContext<TDbContext>(this IServiceCollection services)
+        where TDbContext : DbContext, IAgentPlatformDbContext
+    {
+        services.AddScoped<IAgentPlatformDbContext>(provider => provider.GetRequiredService<TDbContext>());
+        services.AddAgentPlatformSqliteServices();
+        return services;
+    }
+
     public static IServiceCollection AddAgentPlatformBuiltinTools(this IServiceCollection services)
     {
         services.AddSingleton<IClockService, SystemClockService>();
@@ -90,6 +92,19 @@ public static class DependencyInjection
         services.AddScoped<IWeatherService, DemoWeatherService>();
         services.AddScoped<IAgentToolDefinition, WeatherToolDefinition>();
 
+        return services;
+    }
+
+    private static IServiceCollection AddAgentPlatformSqliteServices(this IServiceCollection services)
+    {
+        services.AddScoped<IUserAgentStore, SqliteUserAgentStore>();
+        services.AddScoped<IConversationStore, SqliteConversationStore>();
+        services.AddScoped<IReasoningTraceStore, SqliteReasoningTraceStore>();
+        services.AddScoped<ContextCompactionProviderFactory>();
+        services.AddScoped<SqliteChatHistoryProvider>();
+        services.AddScoped<IAgentSkillCatalog, FileAgentSkillCatalog>();
+        services.AddScoped<IAgentRuntime, OpenAIAgentRuntime>();
+        services.AddAgentPlatformBuiltinTools();
         return services;
     }
 

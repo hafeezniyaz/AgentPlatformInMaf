@@ -1,6 +1,7 @@
 <Solution>
   <Project Path="AgentPlatform.Agents/AgentPlatform.Agents.csproj" />
   <Project Path="AgentPlatform.Api/AgentPlatform.Api.csproj" />
+  <Project Path="AgentPlatform.ConsoleClient/AgentPlatform.ConsoleClient.csproj" />
   <Project Path="AgentPlatform.Core/AgentPlatform.Core.csproj" />
   <Project Path="AgentPlatform.Infrastructure.Sqlite/AgentPlatform.Infrastructure.Sqlite.csproj" />
   <Project Path="AgentPlatform.Tests/AgentPlatform.Tests.csproj" />

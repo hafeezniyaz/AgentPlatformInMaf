@@ -6,7 +6,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace AgentPlatform.Infrastructure.Sqlite.Stores;
 
-public sealed class SqliteReasoningTraceStore(AgentPlatformDbContext dbContext) : IReasoningTraceStore
+public sealed class SqliteReasoningTraceStore(IAgentPlatformDbContext dbContext) : IReasoningTraceStore
 {
     public async Task<IReadOnlyList<ReasoningTraceDto>> GetForSessionAsync(
         string sessionId,

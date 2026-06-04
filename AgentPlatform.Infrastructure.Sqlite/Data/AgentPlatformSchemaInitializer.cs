@@ -6,7 +6,7 @@ namespace AgentPlatform.Infrastructure.Sqlite.Data;
 public static class AgentPlatformSchemaInitializer
 {
     public static async Task EnsureAgentPlatformSchemaAsync(
-        this AgentPlatformDbContext dbContext,
+        this IAgentPlatformDbContext dbContext,
         CancellationToken cancellationToken = default)
     {
         await dbContext.Database.EnsureCreatedAsync(cancellationToken);
@@ -39,7 +39,7 @@ public static class AgentPlatformSchemaInitializer
     }
 
     private static async Task CreateReasoningTracesTableAsync(
-        AgentPlatformDbContext dbContext,
+        IAgentPlatformDbContext dbContext,
         CancellationToken cancellationToken)
     {
 #pragma warning disable EF1002
@@ -55,12 +55,13 @@ public static class AgentPlatformSchemaInitializer
                 "ReasoningContentJson" TEXT NOT NULL,
                 "TokenEstimate" INTEGER NOT NULL,
                 "CaptureMode" TEXT NOT NULL,
-                "CreatedAt" TEXT NOT NULL
+                "CreatedAt" TEXT NOT NULL,
+                CONSTRAINT "FK_ReasoningTraces_ChatSessions_SessionId" FOREIGN KEY ("SessionId") REFERENCES "ChatSessions" ("SessionId") ON DELETE CASCADE
             );
             """,
             cancellationToken);
         await dbContext.Database.ExecuteSqlRawAsync(
-            """CREATE INDEX IF NOT EXISTS "IX_ReasoningTraces_SessionId_TurnSequence" ON "ReasoningTraces" ("SessionId", "TurnSequence");""",
+            """CREATE UNIQUE INDEX IF NOT EXISTS "IX_ReasoningTraces_SessionId_TurnSequence" ON "ReasoningTraces" ("SessionId", "TurnSequence");""",
             cancellationToken);
         await dbContext.Database.ExecuteSqlRawAsync(
             """CREATE INDEX IF NOT EXISTS "IX_ReasoningTraces_SessionId_CreatedAt" ON "ReasoningTraces" ("SessionId", "CreatedAt");""",
@@ -69,7 +70,7 @@ public static class AgentPlatformSchemaInitializer
     }
 
     private static async Task AddColumnIfMissingAsync(
-        AgentPlatformDbContext dbContext,
+        IAgentPlatformDbContext dbContext,
         string tableName,
         string columnName,
         string columnDefinition,
@@ -89,7 +90,7 @@ public static class AgentPlatformSchemaInitializer
     }
 
     private static async Task<bool> ColumnExistsAsync(
-        AgentPlatformDbContext dbContext,
+        IAgentPlatformDbContext dbContext,
         string tableName,
         string columnName,
         CancellationToken cancellationToken)
