@@ -35,7 +35,13 @@ public static class AgentPlatformSchemaInitializer
         await AddColumnIfMissingAsync(dbContext, "ChatSessions", "ModelCompatibilityGroup", "TEXT NOT NULL DEFAULT ''", cancellationToken);
         await AddColumnIfMissingAsync(dbContext, "ChatSessions", "ModelContextWindowTokens", "INTEGER NULL", cancellationToken);
         await AddColumnIfMissingAsync(dbContext, "ChatSessions", "AgentStateJson", "TEXT NOT NULL DEFAULT '{}'", cancellationToken);
+        await AddColumnIfMissingAsync(dbContext, "ChatSessions", "ParentSessionId", "TEXT NULL", cancellationToken);
+        await AddColumnIfMissingAsync(dbContext, "ChatSessions", "ForkedFromMessageId", "TEXT NULL", cancellationToken);
+        await AddColumnIfMissingAsync(dbContext, "ChatSessions", "ForkedFromSequence", "INTEGER NULL", cancellationToken);
+        await AddColumnIfMissingAsync(dbContext, "ChatSessions", "BranchKind", "TEXT NOT NULL DEFAULT 'root'", cancellationToken);
         await CreateReasoningTracesTableAsync(dbContext, cancellationToken);
+        await CreateMessageCheckpointsTableAsync(dbContext, cancellationToken);
+        await CreatePendingHumanRequestsTableAsync(dbContext, cancellationToken);
     }
 
     private static async Task CreateReasoningTracesTableAsync(
@@ -64,6 +70,68 @@ public static class AgentPlatformSchemaInitializer
             cancellationToken);
         await dbContext.Database.ExecuteSqlRawAsync(
             """CREATE INDEX IF NOT EXISTS "IX_ReasoningTraces_SessionId_CreatedAt" ON "ReasoningTraces" ("SessionId", "CreatedAt");""",
+            cancellationToken);
+#pragma warning restore EF1002
+    }
+
+    private static async Task CreateMessageCheckpointsTableAsync(
+        AgentPlatformDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+#pragma warning disable EF1002
+        await dbContext.Database.ExecuteSqlRawAsync(
+            """
+            CREATE TABLE IF NOT EXISTS "MessageCheckpoints" (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_MessageCheckpoints" PRIMARY KEY,
+                "SessionId" TEXT NOT NULL,
+                "MessageId" TEXT NOT NULL,
+                "Sequence" INTEGER NOT NULL,
+                "SerializedSessionState" TEXT NULL,
+                "AgentStateJson" TEXT NOT NULL DEFAULT '{{}}',
+                "CompactedPromptSnapshotJson" TEXT NULL,
+                "LastCompactionStatsJson" TEXT NULL,
+                "ReasoningTraceCount" INTEGER NOT NULL DEFAULT 0,
+                "LastReasoningTokenEstimate" INTEGER NOT NULL DEFAULT 0,
+                "PendingHumanRequestsJson" TEXT NOT NULL DEFAULT '[]',
+                "CreatedAt" TEXT NOT NULL
+            );
+            """,
+            cancellationToken);
+        await dbContext.Database.ExecuteSqlRawAsync(
+            """CREATE UNIQUE INDEX IF NOT EXISTS "IX_MessageCheckpoints_SessionId_MessageId" ON "MessageCheckpoints" ("SessionId", "MessageId");""",
+            cancellationToken);
+        await dbContext.Database.ExecuteSqlRawAsync(
+            """CREATE INDEX IF NOT EXISTS "IX_MessageCheckpoints_SessionId_Sequence" ON "MessageCheckpoints" ("SessionId", "Sequence");""",
+            cancellationToken);
+#pragma warning restore EF1002
+    }
+
+    private static async Task CreatePendingHumanRequestsTableAsync(
+        AgentPlatformDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+#pragma warning disable EF1002
+        await dbContext.Database.ExecuteSqlRawAsync(
+            """
+            CREATE TABLE IF NOT EXISTS "PendingHumanRequests" (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_PendingHumanRequests" PRIMARY KEY,
+                "SessionId" TEXT NOT NULL,
+                "MessageId" TEXT NULL,
+                "MessageSequence" INTEGER NOT NULL,
+                "RunId" TEXT NULL,
+                "RequestType" TEXT NOT NULL,
+                "PayloadJson" TEXT NOT NULL DEFAULT '{{}}',
+                "Status" TEXT NOT NULL DEFAULT 'pending',
+                "CreatedAt" TEXT NOT NULL,
+                "UpdatedAt" TEXT NOT NULL
+            );
+            """,
+            cancellationToken);
+        await dbContext.Database.ExecuteSqlRawAsync(
+            """CREATE INDEX IF NOT EXISTS "IX_PendingHumanRequests_SessionId_Status" ON "PendingHumanRequests" ("SessionId", "Status");""",
+            cancellationToken);
+        await dbContext.Database.ExecuteSqlRawAsync(
+            """CREATE INDEX IF NOT EXISTS "IX_PendingHumanRequests_SessionId_MessageSequence" ON "PendingHumanRequests" ("SessionId", "MessageSequence");""",
             cancellationToken);
 #pragma warning restore EF1002
     }

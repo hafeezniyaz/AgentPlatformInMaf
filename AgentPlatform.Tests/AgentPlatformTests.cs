@@ -427,6 +427,302 @@ public sealed class AgentPlatformTests
     }
 
     [Fact]
+    public async Task Retry_from_user_message_rewinds_tail_and_cancels_later_pending_requests()
+    {
+        await using var fixture = await TestFixture.CreateAsync();
+        var orchestrator = fixture.Services.GetRequiredService<AgentRunOrchestrator>();
+        var store = fixture.Services.GetRequiredService<IConversationStore>();
+        var dbContext = fixture.Services.GetRequiredService<AgentPlatformDbContext>();
+
+        string? sessionId = null;
+        await foreach (var streamEvent in orchestrator.StreamAsync(
+            new StreamRunRequest(null, "general-assistant", [], [], [], "First", null),
+            CancellationToken.None))
+        {
+            sessionId ??= streamEvent.SessionId;
+        }
+
+        await foreach (var _ in orchestrator.StreamAsync(
+            new StreamRunRequest(sessionId, "general-assistant", [], [], [], "Second", null),
+            CancellationToken.None))
+        {
+        }
+
+        var beforeRetry = await store.GetSessionAsync(sessionId!, CancellationToken.None);
+        Assert.NotNull(beforeRetry);
+        var firstUserMessage = Assert.Single(beforeRetry.Messages, message => message.Role == "user" && message.Content == "First");
+        var secondUserMessage = Assert.Single(beforeRetry.Messages, message => message.Role == "user" && message.Content == "Second");
+        await store.AddPendingHumanRequestAsync(
+            new PendingHumanRequestWriteDto(
+                "approval-1",
+                sessionId!,
+                secondUserMessage.Id,
+                secondUserMessage.Sequence,
+                "run-1",
+                "tool.approval",
+                """{"tool":"deploy"}"""),
+            CancellationToken.None);
+
+        var retryEvents = new List<RunStreamEvent>();
+        await foreach (var streamEvent in orchestrator.RetryFromMessageAsync(
+            sessionId!,
+            firstUserMessage.Id,
+            CancellationToken.None))
+        {
+            retryEvents.Add(streamEvent);
+        }
+
+        var afterRetry = await store.GetSessionAsync(sessionId!, CancellationToken.None);
+        var pending = await dbContext.PendingHumanRequests.SingleAsync(CancellationToken.None);
+
+        Assert.NotNull(afterRetry);
+        Assert.Contains(retryEvents, item => item.Event == "conversation.retried");
+        Assert.Equal(["First", "Echo: First"], afterRetry.Messages.Select(message => message.Content));
+        Assert.Equal("cancelled", pending.Status);
+    }
+
+    [Fact]
+    public async Task Fork_from_user_message_creates_linked_session_with_stable_prefix()
+    {
+        await using var fixture = await TestFixture.CreateAsync();
+        var orchestrator = fixture.Services.GetRequiredService<AgentRunOrchestrator>();
+        var store = fixture.Services.GetRequiredService<IConversationStore>();
+        var dbContext = fixture.Services.GetRequiredService<AgentPlatformDbContext>();
+
+        string? sessionId = null;
+        await foreach (var streamEvent in orchestrator.StreamAsync(
+            new StreamRunRequest(null, "general-assistant", [], [], [], "First", null),
+            CancellationToken.None))
+        {
+            sessionId ??= streamEvent.SessionId;
+        }
+
+        await foreach (var _ in orchestrator.StreamAsync(
+            new StreamRunRequest(sessionId, "general-assistant", [], [], [], "Second", null),
+            CancellationToken.None))
+        {
+        }
+
+        var source = await store.GetSessionAsync(sessionId!, CancellationToken.None);
+        Assert.NotNull(source);
+        var secondUserMessage = Assert.Single(source.Messages, message => message.Role == "user" && message.Content == "Second");
+        await store.AddPendingHumanRequestAsync(
+            new PendingHumanRequestWriteDto(
+                "approval-2",
+                sessionId!,
+                secondUserMessage.Id,
+                secondUserMessage.Sequence,
+                "run-2",
+                "tool.approval",
+                """{"tool":"deploy"}"""),
+            CancellationToken.None);
+
+        var fork = await store.ForkSessionAsync(sessionId!, secondUserMessage.Id, "Branch A", CancellationToken.None);
+        var sourceAfterFork = await store.GetSessionAsync(sessionId!, CancellationToken.None);
+        var forkPendingRequests = await dbContext.PendingHumanRequests
+            .Where(request => request.SessionId == fork.SessionId)
+            .ToListAsync(CancellationToken.None);
+
+        Assert.NotNull(sourceAfterFork);
+        Assert.Equal("Branch A", fork.Title);
+        Assert.Equal("fork", fork.BranchKind);
+        Assert.Equal(sessionId, fork.ParentSessionId);
+        Assert.Equal(secondUserMessage.Id, fork.ForkedFromMessageId);
+        Assert.Equal(secondUserMessage.Sequence, fork.ForkedFromSequence);
+        Assert.Equal(["First", "Echo: First"], fork.Messages.Select(message => message.Content));
+        Assert.Equal(["First", "Echo: First", "Second", "Echo: Second"], sourceAfterFork.Messages.Select(message => message.Content));
+        Assert.Empty(forkPendingRequests);
+    }
+
+    [Fact]
+    public async Task Edit_user_message_rewinds_tail_reruns_updated_content_and_keeps_message_id()
+    {
+        await using var fixture = await TestFixture.CreateAsync();
+        var orchestrator = fixture.Services.GetRequiredService<AgentRunOrchestrator>();
+        var store = fixture.Services.GetRequiredService<IConversationStore>();
+        var dbContext = fixture.Services.GetRequiredService<AgentPlatformDbContext>();
+
+        string? sessionId = null;
+        await foreach (var streamEvent in orchestrator.StreamAsync(
+            new StreamRunRequest(null, "general-assistant", [], [], [], "First", null),
+            CancellationToken.None))
+        {
+            sessionId ??= streamEvent.SessionId;
+        }
+
+        await foreach (var _ in orchestrator.StreamAsync(
+            new StreamRunRequest(sessionId, "general-assistant", [], [], [], "Second", null),
+            CancellationToken.None))
+        {
+        }
+
+        var beforeEdit = await store.GetSessionAsync(sessionId!, CancellationToken.None);
+        Assert.NotNull(beforeEdit);
+        var firstUserMessage = Assert.Single(beforeEdit.Messages, message => message.Role == "user" && message.Content == "First");
+        var secondUserMessage = Assert.Single(beforeEdit.Messages, message => message.Role == "user" && message.Content == "Second");
+        await store.AddPendingHumanRequestAsync(
+            new PendingHumanRequestWriteDto(
+                "approval-edit",
+                sessionId!,
+                secondUserMessage.Id,
+                secondUserMessage.Sequence,
+                "run-edit",
+                "tool.approval",
+                """{"tool":"deploy"}"""),
+            CancellationToken.None);
+
+        var editEvents = new List<RunStreamEvent>();
+        await foreach (var streamEvent in orchestrator.EditMessageAndRetryAsync(
+            sessionId!,
+            firstUserMessage.Id,
+            "Edited first",
+            CancellationToken.None))
+        {
+            editEvents.Add(streamEvent);
+        }
+
+        var afterEdit = await store.GetSessionAsync(sessionId!, CancellationToken.None);
+        var pending = await dbContext.PendingHumanRequests.SingleAsync(CancellationToken.None);
+        var editedEvent = Assert.IsType<ConversationMessageEditedPayload>(
+            Assert.Single(editEvents, item => item.Event == "conversation.messageEdited").Data);
+
+        Assert.NotNull(afterEdit);
+        Assert.Equal(firstUserMessage.Id, afterEdit.Messages[0].Id);
+        Assert.Equal(firstUserMessage.Sequence, afterEdit.Messages[0].Sequence);
+        Assert.Equal(["Edited first", "Echo: Edited first"], afterEdit.Messages.Select(message => message.Content));
+        Assert.Equal(firstUserMessage.Id, editedEvent.MessageId);
+        Assert.Equal("First", editedEvent.PreviousContent);
+        Assert.Equal("Edited first", editedEvent.UpdatedContent);
+        Assert.Equal("cancelled", pending.Status);
+    }
+
+    [Fact]
+    public async Task Edit_rejects_assistant_messages_missing_checkpoints_and_empty_content()
+    {
+        await using var fixture = await TestFixture.CreateAsync();
+        var orchestrator = fixture.Services.GetRequiredService<AgentRunOrchestrator>();
+        var store = fixture.Services.GetRequiredService<IConversationStore>();
+
+        string? sessionId = null;
+        await foreach (var streamEvent in orchestrator.StreamAsync(
+            new StreamRunRequest(null, "general-assistant", [], [], [], "Hello", null),
+            CancellationToken.None))
+        {
+            sessionId ??= streamEvent.SessionId;
+        }
+
+        var session = await store.GetSessionAsync(sessionId!, CancellationToken.None);
+        Assert.NotNull(session);
+        var assistantMessage = Assert.Single(session.Messages, message => message.Role == "assistant");
+
+        var assistantError = await Assert.ThrowsAsync<AgentPlatformValidationException>(async () =>
+        {
+            await foreach (var _ in orchestrator.EditMessageAndRetryAsync(sessionId!, assistantMessage.Id, "Edited", CancellationToken.None))
+            {
+            }
+        });
+
+        var emptyError = await Assert.ThrowsAsync<AgentPlatformValidationException>(async () =>
+        {
+            await foreach (var _ in orchestrator.EditMessageAndRetryAsync(sessionId!, session.Messages[0].Id, "   ", CancellationToken.None))
+            {
+            }
+        });
+
+        var stored = await store.CreateSessionAsync(
+            "legacy-edit-session",
+            "general-assistant",
+            "General Assistant",
+            "Legacy",
+            "hash",
+            [],
+            [],
+            [],
+            new ContextPolicyDto { Enabled = true, Mode = "inFlight", Profile = "balanced", SummarizerModel = "test-model" },
+            new ThinkingPolicyDto { Enabled = false, Mode = "disabled", Capture = "opaque", ExposeToClient = false, MaxPreservedTokens = 24000 },
+            new ResolvedModel("test-model", "openai", null, "test-model", null, null),
+            CancellationToken.None);
+        var legacyMessage = await store.AddMessageAsync(stored.SessionId, "user", "Legacy question", CancellationToken.None);
+        var checkpointError = await Assert.ThrowsAsync<AgentPlatformConflictException>(async () =>
+        {
+            await foreach (var _ in orchestrator.EditMessageAndRetryAsync(stored.SessionId, legacyMessage.Id, "Edited legacy", CancellationToken.None))
+            {
+            }
+        });
+
+        Assert.Contains("Only user messages", assistantError.Message);
+        Assert.Contains("required", emptyError.Message);
+        Assert.Contains("restorable checkpoint", checkpointError.Message);
+    }
+
+    [Fact]
+    public async Task Retry_and_fork_reject_assistant_messages()
+    {
+        await using var fixture = await TestFixture.CreateAsync();
+        var orchestrator = fixture.Services.GetRequiredService<AgentRunOrchestrator>();
+        var store = fixture.Services.GetRequiredService<IConversationStore>();
+
+        string? sessionId = null;
+        await foreach (var streamEvent in orchestrator.StreamAsync(
+            new StreamRunRequest(null, "general-assistant", [], [], [], "Hello", null),
+            CancellationToken.None))
+        {
+            sessionId ??= streamEvent.SessionId;
+        }
+
+        var session = await store.GetSessionAsync(sessionId!, CancellationToken.None);
+        Assert.NotNull(session);
+        var assistantMessage = Assert.Single(session.Messages, message => message.Role == "assistant");
+
+        var retryError = await Assert.ThrowsAsync<AgentPlatformValidationException>(async () =>
+        {
+            await foreach (var _ in orchestrator.RetryFromMessageAsync(sessionId!, assistantMessage.Id, CancellationToken.None))
+            {
+            }
+        });
+        var forkError = await Assert.ThrowsAsync<AgentPlatformValidationException>(() =>
+            store.ForkSessionAsync(sessionId!, assistantMessage.Id, null, CancellationToken.None));
+
+        Assert.Contains("Only user messages", retryError.Message);
+        Assert.Contains("Only user messages", forkError.Message);
+    }
+
+    [Fact]
+    public async Task Retry_and_fork_require_checkpoint()
+    {
+        await using var fixture = await TestFixture.CreateAsync();
+        var store = fixture.Services.GetRequiredService<IConversationStore>();
+        var orchestrator = fixture.Services.GetRequiredService<AgentRunOrchestrator>();
+
+        var stored = await store.CreateSessionAsync(
+            "legacy-session",
+            "general-assistant",
+            "General Assistant",
+            "Legacy",
+            "hash",
+            [],
+            [],
+            [],
+            new ContextPolicyDto { Enabled = true, Mode = "inFlight", Profile = "balanced", SummarizerModel = "test-model" },
+            new ThinkingPolicyDto { Enabled = false, Mode = "disabled", Capture = "opaque", ExposeToClient = false, MaxPreservedTokens = 24000 },
+            new ResolvedModel("test-model", "openai", null, "test-model", null, null),
+            CancellationToken.None);
+        var legacyMessage = await store.AddMessageAsync(stored.SessionId, "user", "Legacy question", CancellationToken.None);
+
+        var retryError = await Assert.ThrowsAsync<AgentPlatformConflictException>(async () =>
+        {
+            await foreach (var _ in orchestrator.RetryFromMessageAsync(stored.SessionId, legacyMessage.Id, CancellationToken.None))
+            {
+            }
+        });
+        var forkError = await Assert.ThrowsAsync<AgentPlatformConflictException>(() =>
+            store.ForkSessionAsync(stored.SessionId, legacyMessage.Id, null, CancellationToken.None));
+
+        Assert.Contains("restorable checkpoint", retryError.Message);
+        Assert.Contains("restorable checkpoint", forkError.Message);
+    }
+
+    [Fact]
     public async Task Config_hash_mismatch_blocks_session_reuse()
     {
         await using var fixture = await TestFixture.CreateAsync();

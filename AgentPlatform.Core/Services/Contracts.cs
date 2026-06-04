@@ -108,6 +108,8 @@ public interface IConversationStore
 
     Task<StoredSession?> GetStoredSessionAsync(string sessionId, CancellationToken cancellationToken);
 
+    Task<ChatMessageDto?> GetMessageAsync(string sessionId, string messageId, CancellationToken cancellationToken);
+
     Task<StoredSession> CreateSessionAsync(
         string sessionId,
         string agentId,
@@ -122,7 +124,30 @@ public interface IConversationStore
         ResolvedModel model,
         CancellationToken cancellationToken);
 
-    Task AddMessageAsync(string sessionId, string role, string content, CancellationToken cancellationToken);
+    Task<ChatMessageDto> AddMessageAsync(
+        string sessionId,
+        string role,
+        string content,
+        CancellationToken cancellationToken,
+        string? messageId = null);
+
+    Task SavePreTurnCheckpointAsync(string sessionId, string messageId, CancellationToken cancellationToken);
+
+    Task<RetryTurnDto> PrepareRetryAsync(
+        string sessionId,
+        string messageId,
+        CancellationToken cancellationToken,
+        string? updatedMessage = null);
+
+    Task<SessionDetailsDto> ForkSessionAsync(
+        string sessionId,
+        string messageId,
+        string? title,
+        CancellationToken cancellationToken);
+
+    Task<PendingHumanRequestDto> AddPendingHumanRequestAsync(
+        PendingHumanRequestWriteDto request,
+        CancellationToken cancellationToken);
 
     Task AddRunEventAsync(string sessionId, string eventName, object payload, CancellationToken cancellationToken);
 
@@ -178,3 +203,33 @@ public sealed record StoredSession(
     int LastReasoningTokenEstimate,
     ResolvedModel Model,
     string AgentStateJson = "{}");
+
+public sealed record RetryTurnDto(
+    string SessionId,
+    string MessageId,
+    int Sequence,
+    string AgentId,
+    string Message,
+    string? Model,
+    string PreviousMessage);
+
+public sealed record PendingHumanRequestWriteDto(
+    string? Id,
+    string SessionId,
+    string? MessageId,
+    int MessageSequence,
+    string? RunId,
+    string RequestType,
+    string PayloadJson);
+
+public sealed record PendingHumanRequestDto(
+    string Id,
+    string SessionId,
+    string? MessageId,
+    int MessageSequence,
+    string? RunId,
+    string RequestType,
+    string PayloadJson,
+    string Status,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset UpdatedAt);

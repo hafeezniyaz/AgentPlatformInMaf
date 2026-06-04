@@ -15,6 +15,10 @@ public sealed class AgentPlatformDbContext(DbContextOptions<AgentPlatformDbConte
 
     public DbSet<ReasoningTraceEntity> ReasoningTraces => Set<ReasoningTraceEntity>();
 
+    public DbSet<MessageCheckpointEntity> MessageCheckpoints => Set<MessageCheckpointEntity>();
+
+    public DbSet<PendingHumanRequestEntity> PendingHumanRequests => Set<PendingHumanRequestEntity>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<UserAgentEntity>(entity =>
@@ -39,6 +43,9 @@ public sealed class AgentPlatformDbContext(DbContextOptions<AgentPlatformDbConte
             entity.Property(session => session.ModelId).HasMaxLength(160);
             entity.Property(session => session.ModelProvider).HasMaxLength(40);
             entity.Property(session => session.ModelCompatibilityGroup).HasMaxLength(160);
+            entity.Property(session => session.ParentSessionId).HasMaxLength(64);
+            entity.Property(session => session.ForkedFromMessageId).HasMaxLength(64);
+            entity.Property(session => session.BranchKind).HasMaxLength(40);
             entity.HasIndex(session => new { session.IsArchived, session.UpdatedAt });
         });
 
@@ -68,6 +75,31 @@ public sealed class AgentPlatformDbContext(DbContextOptions<AgentPlatformDbConte
             entity.Property(trace => trace.CaptureMode).HasMaxLength(40);
             entity.HasIndex(trace => new { trace.SessionId, trace.TurnSequence });
             entity.HasIndex(trace => new { trace.SessionId, trace.CreatedAt });
+        });
+
+        modelBuilder.Entity<MessageCheckpointEntity>(entity =>
+        {
+            entity.HasKey(checkpoint => checkpoint.Id);
+            entity.Property(checkpoint => checkpoint.Id).HasMaxLength(64);
+            entity.Property(checkpoint => checkpoint.SessionId).HasMaxLength(64);
+            entity.Property(checkpoint => checkpoint.MessageId).HasMaxLength(64);
+            entity.Property(checkpoint => checkpoint.AgentStateJson).HasDefaultValue("{}");
+            entity.Property(checkpoint => checkpoint.PendingHumanRequestsJson).HasDefaultValue("[]");
+            entity.HasIndex(checkpoint => new { checkpoint.SessionId, checkpoint.MessageId }).IsUnique();
+            entity.HasIndex(checkpoint => new { checkpoint.SessionId, checkpoint.Sequence });
+        });
+
+        modelBuilder.Entity<PendingHumanRequestEntity>(entity =>
+        {
+            entity.HasKey(request => request.Id);
+            entity.Property(request => request.Id).HasMaxLength(64);
+            entity.Property(request => request.SessionId).HasMaxLength(64);
+            entity.Property(request => request.MessageId).HasMaxLength(64);
+            entity.Property(request => request.RunId).HasMaxLength(64);
+            entity.Property(request => request.RequestType).HasMaxLength(120);
+            entity.Property(request => request.Status).HasMaxLength(40);
+            entity.HasIndex(request => new { request.SessionId, request.Status });
+            entity.HasIndex(request => new { request.SessionId, request.MessageSequence });
         });
     }
 }

@@ -24,6 +24,17 @@ public sealed class AgentRunOrchestrator(
         StreamRunRequest request,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {
+        await foreach (var streamEvent in StreamCoreAsync(request, null, cancellationToken))
+        {
+            yield return streamEvent;
+        }
+    }
+
+    private async IAsyncEnumerable<RunStreamEvent> StreamCoreAsync(
+        StreamRunRequest request,
+        string? fixedUserMessageId,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+    {
         var agent = await catalogService.GetAgentAsync(request.AgentId, cancellationToken)
             ?? throw new AgentPlatformValidationException($"Unknown agent '{request.AgentId}'.");
 
@@ -94,6 +105,11 @@ public sealed class AgentRunOrchestrator(
                 resolvedModel,
                 cancellationToken);
         }
+
+        var userMessageId = string.IsNullOrWhiteSpace(fixedUserMessageId)
+            ? Guid.NewGuid().ToString("n")
+            : fixedUserMessageId;
+        await conversationStore.SavePreTurnCheckpointAsync(sessionId, userMessageId, cancellationToken);
 
         var runSpec = new AgentRunSpec(
             sessionId,
@@ -243,7 +259,7 @@ public sealed class AgentRunOrchestrator(
 
         var finalText = assistantMessage.ToString();
         var finalReasoning = reasoningMessage.ToString();
-        await conversationStore.AddMessageAsync(sessionId, "user", request.Message, cancellationToken);
+        await conversationStore.AddMessageAsync(sessionId, "user", request.Message, cancellationToken, userMessageId);
         if (!string.IsNullOrWhiteSpace(finalText))
         {
             await conversationStore.AddMessageAsync(sessionId, "assistant", finalText, cancellationToken);
@@ -280,6 +296,80 @@ public sealed class AgentRunOrchestrator(
                 sessionId,
                 JsonSerializer.Serialize(agentState, JsonOptions),
                 cancellationToken);
+        }
+    }
+
+    public async IAsyncEnumerable<RunStreamEvent> RetryFromMessageAsync(
+        string sessionId,
+        string messageId,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        var retry = await conversationStore.PrepareRetryAsync(sessionId, messageId, cancellationToken);
+        var retried = new RunStreamEvent(
+            "conversation.retried",
+            sessionId,
+            new ConversationRetriedPayload(messageId, retry.Sequence),
+            DateTimeOffset.UtcNow);
+        await conversationStore.AddRunEventAsync(sessionId, retried.Event, retried.Data, cancellationToken);
+        yield return retried;
+
+        await foreach (var streamEvent in StreamCoreAsync(
+            new StreamRunRequest(
+                retry.SessionId,
+                retry.AgentId,
+                ToolIds: null,
+                MiddlewareIds: null,
+                SkillIds: null,
+                retry.Message,
+                retry.Model),
+            messageId,
+            cancellationToken))
+        {
+            yield return streamEvent;
+        }
+    }
+
+    public async IAsyncEnumerable<RunStreamEvent> EditMessageAndRetryAsync(
+        string sessionId,
+        string messageId,
+        string updatedMessage,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(updatedMessage))
+        {
+            throw new AgentPlatformValidationException("Edited message is required.");
+        }
+
+        var retry = await conversationStore.PrepareRetryAsync(
+            sessionId,
+            messageId,
+            cancellationToken,
+            updatedMessage);
+        var edited = new RunStreamEvent(
+            "conversation.messageEdited",
+            sessionId,
+            new ConversationMessageEditedPayload(
+                messageId,
+                retry.Sequence,
+                retry.PreviousMessage,
+                retry.Message),
+            DateTimeOffset.UtcNow);
+        await conversationStore.AddRunEventAsync(sessionId, edited.Event, edited.Data, cancellationToken);
+        yield return edited;
+
+        await foreach (var streamEvent in StreamCoreAsync(
+            new StreamRunRequest(
+                retry.SessionId,
+                retry.AgentId,
+                ToolIds: null,
+                MiddlewareIds: null,
+                SkillIds: null,
+                retry.Message,
+                retry.Model),
+            messageId,
+            cancellationToken))
+        {
+            yield return streamEvent;
         }
     }
 
@@ -433,3 +523,5 @@ public sealed class AgentRunOrchestrator(
 }
 
 public sealed class AgentPlatformValidationException(string message) : Exception(message);
+
+public sealed class AgentPlatformConflictException(string message) : Exception(message);

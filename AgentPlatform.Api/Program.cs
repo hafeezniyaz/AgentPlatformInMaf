@@ -134,6 +134,109 @@ api.MapDelete("/sessions/{sessionId}", async (
     return archived ? Results.NoContent() : Results.NotFound();
 });
 
+api.MapPost("/sessions/{sessionId}/messages/{messageId}/fork", async (
+    string sessionId,
+    string messageId,
+    ForkSessionRequest? request,
+    IConversationStore store,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var fork = await store.ForkSessionAsync(sessionId, messageId, request?.Title, cancellationToken);
+        return Results.Created($"/api/sessions/{fork.SessionId}", fork);
+    }
+    catch (AgentPlatformConflictException ex)
+    {
+        return Results.Conflict(new { error = ex.Message });
+    }
+    catch (AgentPlatformValidationException ex)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
+});
+
+api.MapPost("/sessions/{sessionId}/messages/{messageId}/retry/stream", async (
+    string sessionId,
+    string messageId,
+    AgentRunOrchestrator orchestrator,
+    HttpContext httpContext,
+    CancellationToken cancellationToken) =>
+{
+    httpContext.Response.Headers.CacheControl = "no-cache";
+    httpContext.Response.Headers.Connection = "keep-alive";
+    httpContext.Response.ContentType = "text/event-stream";
+
+    try
+    {
+        await foreach (var streamEvent in orchestrator.RetryFromMessageAsync(sessionId, messageId, cancellationToken))
+        {
+            await WriteSseAsync(httpContext.Response, streamEvent.Event, streamEvent, cancellationToken);
+        }
+    }
+    catch (AgentPlatformConflictException ex)
+    {
+        httpContext.Response.StatusCode = StatusCodes.Status409Conflict;
+        await WriteSseAsync(
+            httpContext.Response,
+            "run.error",
+            new RunStreamEvent("run.error", sessionId, new RunErrorPayload(ex.Message), DateTimeOffset.UtcNow),
+            cancellationToken);
+    }
+    catch (AgentPlatformValidationException ex)
+    {
+        httpContext.Response.StatusCode = StatusCodes.Status400BadRequest;
+        await WriteSseAsync(
+            httpContext.Response,
+            "run.error",
+            new RunStreamEvent("run.error", sessionId, new RunErrorPayload(ex.Message), DateTimeOffset.UtcNow),
+            cancellationToken);
+    }
+});
+
+api.MapPost("/sessions/{sessionId}/messages/{messageId}/edit/stream", async (
+    string sessionId,
+    string messageId,
+    EditMessageRequest request,
+    AgentRunOrchestrator orchestrator,
+    HttpContext httpContext,
+    CancellationToken cancellationToken) =>
+{
+    httpContext.Response.Headers.CacheControl = "no-cache";
+    httpContext.Response.Headers.Connection = "keep-alive";
+    httpContext.Response.ContentType = "text/event-stream";
+
+    try
+    {
+        await foreach (var streamEvent in orchestrator.EditMessageAndRetryAsync(
+            sessionId,
+            messageId,
+            request.Message,
+            cancellationToken))
+        {
+            await WriteSseAsync(httpContext.Response, streamEvent.Event, streamEvent, cancellationToken);
+        }
+    }
+    catch (AgentPlatformConflictException ex)
+    {
+        httpContext.Response.StatusCode = StatusCodes.Status409Conflict;
+        await WriteSseAsync(
+            httpContext.Response,
+            "run.error",
+            new RunStreamEvent("run.error", sessionId, new RunErrorPayload(ex.Message), DateTimeOffset.UtcNow),
+            cancellationToken);
+    }
+    catch (AgentPlatformValidationException ex)
+    {
+        httpContext.Response.StatusCode = StatusCodes.Status400BadRequest;
+        await WriteSseAsync(
+            httpContext.Response,
+            "run.error",
+            new RunStreamEvent("run.error", sessionId, new RunErrorPayload(ex.Message), DateTimeOffset.UtcNow),
+            cancellationToken);
+    }
+});
+
 api.MapPost("/runs/stream", async (
     StreamRunRequest request,
     AgentRunOrchestrator orchestrator,

@@ -32,3 +32,11 @@ public sealed record RunCompletedPayload(string AssistantMessage);
 public sealed record RunErrorPayload(string Message);
 
 public sealed record ReasoningDeltaPayload(string Text);
+
+public sealed record ConversationRetriedPayload(string MessageId, int Sequence);
+
+public sealed record ConversationMessageEditedPayload(
+    string MessageId,
+    int Sequence,
+    string PreviousContent,
+    string UpdatedContent);

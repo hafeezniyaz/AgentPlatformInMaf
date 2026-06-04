@@ -9,7 +9,11 @@ public sealed record SessionSummaryDto(
     string? LastMessage,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
-    int MessageCount);
+    int MessageCount,
+    string? ParentSessionId = null,
+    string? ForkedFromMessageId = null,
+    int? ForkedFromSequence = null,
+    string BranchKind = "root");
 
 public sealed record SessionDetailsDto(
     string SessionId,
@@ -32,7 +36,11 @@ public sealed record SessionDetailsDto(
     ModelDefinitionDto Model,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
-    IReadOnlyList<ChatMessageDto> Messages);
+    IReadOnlyList<ChatMessageDto> Messages,
+    string? ParentSessionId = null,
+    string? ForkedFromMessageId = null,
+    int? ForkedFromSequence = null,
+    string BranchKind = "root");
 
 public sealed record ChatMessageDto(
     string Id,
@@ -47,3 +55,7 @@ public sealed record PagedMessagesDto(
     int Limit,
     int Offset,
     int Total);
+
+public sealed record ForkSessionRequest(string? Title = null);
+
+public sealed record EditMessageRequest(string Message);

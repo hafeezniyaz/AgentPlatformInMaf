@@ -56,6 +56,14 @@ public sealed class ChatSessionEntity
 
     public int? ModelContextWindowTokens { get; set; }
 
+    public string? ParentSessionId { get; set; }
+
+    public string? ForkedFromMessageId { get; set; }
+
+    public int? ForkedFromSequence { get; set; }
+
+    public string BranchKind { get; set; } = "root";
+
     public bool IsArchived { get; set; }
 
     public DateTimeOffset CreatedAt { get; set; }
